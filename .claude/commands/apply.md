@@ -280,14 +280,54 @@ For each `free_text` field:
 2. Produce an 80–150 word answer that addresses the question specifically, grounded in `config/cv.md` and `jdText`. **Never invent experience**.
 3. Fill via `form_input`.
 
-## 7. Submit
+## 7. Human review pause (safety tripwire — no auto-submit)
 
 1. Capture `beforeUrl = window.location.href`.
 2. Note `startTime = Date.now()`.
 3. Use `find` to locate the final submit button (`Submit`, `Submit Application`, `Apply`, `Envoyer`, `Postuler`, `Send application`). On multi-step forms, click `Next` first and re-run step 4 on the next page.
-4. Click the submit button.
+4. **Do NOT click the submit button.** Instead inject a review banner via `javascript_tool`:
+
+   ```javascript
+   const banner = document.createElement('div');
+   banner.id = 'claude-apply-review-banner';
+   banner.style.cssText = [
+     'position:fixed',
+     'top:0',
+     'left:0',
+     'right:0',
+     'z-index:999999',
+     'background:#f59e0b',
+     'color:#1a1a1a',
+     'font-size:16px',
+     'font-weight:bold',
+     'text-align:center',
+     'padding:14px 16px',
+     'font-family:system-ui,sans-serif',
+     'box-shadow:0 2px 8px rgba(0,0,0,0.25)',
+   ].join(';');
+   banner.textContent =
+     'AI FILL COMPLETE: Ready for human review — please verify all fields and click Submit yourself.';
+   document.body.prepend(banner);
+   return 'banner injected';
+   ```
+
+5. Tell the user:
+
+   > "AI fill is complete. The form is ready for your review in Chrome. Please check every field, then click **Submit** yourself. The tab will stay open. When you have submitted (or decided not to), type `continue` to log the outcome."
+
+6. **Wait for the user to type `continue`** before proceeding. Do not navigate away from the tab, do not poll the page, and do not attempt to detect confirmation automatically — the user is in control.
+
+7. Ask the user: "Did the application submit successfully? Reply `yes` (Applied), `unconfirmed` (Submitted (unconfirmed)), or `no` (Failed/Discarded)." Set `finalStatus` accordingly. If the user replies `yes`, also ask for the confirmation text or URL they saw, and record it in `notes`.
+
+8. Skip step 8 entirely — confirmation detection is not needed because the user submitted manually.
 
 ## 8. Confirmation detection (20 s max, L1→L2→L3 fallback)
+
+> **This step is SKIPPED when step 7 was reached** (human review pause is active). Jump directly to step 9.
+
+<!-- The block below is kept for reference only; it runs only if a future flag re-enables auto-submit. -->
+
+<!--
 
 Import `classifyConfirmation`, `classifyTabContext`, `suggestProbeUrls` from `src/apply/confirmation-detector.mjs`.
 
@@ -344,6 +384,8 @@ If 20 s elapsed with no definitive result → status `Submitted (unconfirmed)`, 
 - **Tab closed by site**: L2 detects the missing tab. Status = `Submitted (unconfirmed)`, alert user — the tab is gone so no screenshot is possible.
 - **Redirect to third-party domain**: L2 captures the new URL via `tabs_context_mcp` even if `javascript_tool` fails on the new domain (missing extension permission).
 - **Aggregator silent close (e.g. WTTJ)**: L3 probes candidate URLs. If none match, `Submitted (unconfirmed)`.
+
+-->
 
 ## 9. State update
 
