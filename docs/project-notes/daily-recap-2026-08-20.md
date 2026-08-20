@@ -175,15 +175,37 @@ standard fill/check/click and need React-aware event handling (the repo's
 
 ## Where We Left Off / Next Steps
 
-- Decided to pause rather than build React-widget handling live against the real Epoch
-  page — too slow to iterate that way. Discussed building a **local test HTML page that
-  mimics a React-controlled radio/autocomplete** as a faster way to iterate on this
-  specific fix without repeated live-site round trips. Not started yet.
-- Open decision, not yet made: is chasing the remaining React-widget fields worth it, given
-  they already land safely on the manual-review list and review happens before every
-  submit anyway? Worth revisiting with fresh eyes next session.
-- Not yet done: wiring resume upload into the POC; testing on a second ATS (Greenhouse or
-  Ashby) to see how much of the classifier/script generalizes; building Phase 2's batching;
-  any cloud Routine work at all.
+**Priority for next session, set explicitly at the end of today:** focus on coding/repo
+tasks before further exploratory testing. In order:
+
+1. **Rewrite Phase 2 scoring for true batching.** `src/score/index.mjs`'s `--batch` flag
+   currently parallelizes separate `claude -p` calls (one per job) — it does NOT combine
+   them into a single prompt. Needs a real rewrite: one prompt containing the CV + every
+   pending job posting, one response with all scores. This was reconfirmed today as a
+   hard requirement (token savings), not optional.
+2. **Wire up a real `/apply` command.** Two disconnected things currently exist:
+   `poc-fill.mjs` (our new, cheap, code-driven approach — proven working) and
+   `.claude/commands/apply.md` (the actual command Claude Code recognizes as `/apply` —
+   still the OLD agent-driven playbook we moved away from). Nothing connects them yet.
+   `apply.md` needs to be rewritten to invoke our script's logic instead of driving the
+   browser itself turn-by-turn.
+3. **Create the actual cloud Routine.** Confirmed today: no Routine exists for this
+   project yet — the "routine already set up" was the unrelated morning news briefing.
+   Phases 1-3 have never run as an automated Routine, only Phase 1 has been dry-run
+   manually and Phase 4 tested manually.
+
+**After the above (lower priority, previously noted):**
+- Diagnose the one remaining failing radio button (`poc_field_14` on the Epoch AI form)
+  by comparing its real HTML against the working radio's HTML — don't guess "React" again,
+  actually look.
+- Wire resume upload into the script (`upload-file.mjs` exists in the repo, untested from
+  our script).
+- Test the approach on a second ATS (Greenhouse or Ashby) — only Lever has been tested.
+
+**Full realistic user walkthrough discussed today** (see chat): confirmed steps 4-8 of a
+9-step daily-use flow are proven (open Ubuntu → run apply → fields fill → review →
+submit). Steps 1-3 (cron fires → Phase 2 scores → digest email arrives) are still 100%
+unbuilt — this is the gap items 1 and 3 above are meant to close.
+
 - The architecture doc itself was **not** updated with today's POC findings (per your
   instruction — you'll say explicitly when it should be).
