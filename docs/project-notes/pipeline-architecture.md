@@ -1,377 +1,295 @@
-# Job Application Pipeline — Architecture v2.0
+# Job Application Pipeline — Architecture
 
 Base repo: https://github.com/LeoLaborie/claude-apply (forked to `rohanaluri/claude-apply`, private)
 Orchestration: Claude Code Routines (cloud, Anthropic-managed)
-Local execution environment: **WSL2 (Ubuntu) running on a Windows host**
+Local execution environment: WSL2 (Ubuntu) on a Windows host
 Notification: Zapier MCP → Gmail
 
 ---
 
-## 0. Key Decisions Log (read this first if confused later)
+## 0. Key Decisions Log
 
-1. **The repo's default `/apply` auto-submits.** We are patching this. Our version
-   MUST stop at the final review screen and never click Submit. This is a deliberate
-   deviation from upstream `claude-apply` behavior — do not "fix" it back.
-2. **Essay drafting only happens for jobs that score ≥ 85.** Scoring and essay
-   drafting are combined into a single Claude API call per job (see Phase 2), but
-   the essay field in the response schema is only populated when the model's own
-   score comes back ≥ 85. This avoids wasting a generation on jobs that never
-   make the digest.
-3. **`cv.md` is cached, not resent per-job.** All Phase 2 calls for a given
-   morning's batch reuse a single cached prompt block containing the CV. Only the
-   per-job posting text is fresh input each call.
-4. **Routines run 1x/day at 6:30 AM, cloud-only, PC off.** This uses 1 of 5 daily
-   Pro-plan routine runs (shared pool with morning news briefing routine and any
-   interactive Claude Code usage that day — budget accordingly, 3 runs/day remain
-   in reserve).
-5. **Phase 4 (actual browser apply) is local-only, human-triggered, never
-   automatic.** Nothing submits without you physically clicking Submit.
-6. **Local execution runs inside WSL2/Ubuntu, not Windows directly.** `claude-apply`'s
-   `scripts/setup.sh` only supports Linux and macOS — there is no Windows branch in
-   the upstream repo. Rather than patch around this gap piecemeal (the whole repo
-   assumes a Unix-like environment throughout — file paths, shell aliases, Chrome
-   detection, etc.), the entire local stack runs inside a real Ubuntu environment via
-   WSL2. This is not a workaround bolted onto a Windows setup — it **is** the local
-   architecture. Every local command in this document (`chrome-apply`, `node
-   src/scan/index.mjs`, `/apply`, etc.) runs inside this Ubuntu environment.
+1. **No AI agent ever reads a live page turn-by-turn.** Every AI call in this pipeline is
+   one prompt in, one structured answer out — never an agent deciding what to click next.
+   Reading pages and filling forms is done by plain code (Playwright), confirmed to already
+   exist in the base repo (see Section 7).
+2. **Most form fields need zero AI at all.** The repo's `field-classifier.mjs` matches a
+   field's label/name against known patterns (email, phone, name, education, work
+   authorization, EEO questions, etc.) and pulls the answer straight from your profile
+   data. Only genuine open-ended essay questions need an actual AI-written answer.
+3. **Phase 2 (scoring) is batched into one call per scan run**, not one call per job. All
+   pending postings + your CV go into a single prompt; Claude returns an array of scores.
+   Essay drafting for the digest email stays in this same call, gated at score ≥ 85.
+4. **Phase 4 (apply) makes at most one AI call per application** — only if that specific
+   form has a genuine free-text/essay question the classifier can't answer from profile
+   data. Many applications may need zero AI calls entirely.
+5. **This runs on the existing Pro subscription — no separate API key needed** at current
+   volume (~10 jobs scored + ~3 applications/day ≈ 4 short calls/day, well under Pro's
+   budget). Revisit only if volume scales up substantially.
+6. **Safety tripwire: the script halts at the final review screen and never clicks
+   Submit.** You always click Submit yourself, every time, no exceptions.
+7. **Local execution runs inside WSL2/Ubuntu**, not Windows directly — the base repo's
+   setup script and Chrome-detection logic only support Linux/macOS.
+8. **Phase 2 sends only extracted core text (title/requirements/description), not raw
+   page HTML.** Job postings can contain thousands of words of navigation, cookie
+   banners, and boilerplate around the actual description — sending that raw inflates
+   every prompt for no benefit. The scan/score pipeline must extract clean text before
+   it ever reaches a prompt. `src/score/index.mjs` already caps job text at
+   `jdMaxTokens: 1500` — needs verifying whether that's smart extraction or a blunt
+   cutoff (see Open Items).
+9. **Prompt caching is used where it actually helps: Phase 4, not Phase 2.** Phase 2 is
+   already one batched call, so `cv.md` is only sent once regardless — caching has
+   little to add there. Phase 4 makes a separate call per application, each repeating
+   the same `cv.md` prefix, so structuring that prompt with `cv.md` and core instructions
+   as a fixed, cacheable prefix (unchanged across applications) is where caching earns
+   its keep — cutting repeated input-token cost across a day's worth of applications.
+10. **Phases 1-3 run on a strict single daily cron trigger** (e.g. 7:00 AM once/day) —
+    not on-demand, not multiple times while testing. This protects the ~5 routine-run/day
+    cap on Pro from being burned accidentally during development.
 
 ---
 
-## 1. Local Execution Environment (Architecture Spec)
+## 1. Local Execution Environment
 
-This section defines the actual local stack the pipeline runs on. Treat this as
-infrastructure spec, not a setup log — it's what Phase 1 and Phase 4 assume exists
-when they say "run locally."
+**Host:** Windows 11 PC with WSL2 (Ubuntu). Real Linux kernel, not emulation. GUI apps
+(Chrome) forward to the Windows desktop natively via WSLg.
 
-**Host:** Windows 11 PC, with WSL2 (Windows Subsystem for Linux) enabled and running
-an Ubuntu distribution. WSL2 runs a real Linux kernel in a lightweight VM — this is not
-emulation, and GUI Linux apps (like Chrome) are forwarded natively to the Windows
-desktop via WSLg, so they appear and behave like normal Windows windows despite running
-inside Linux.
+**Repo location:** `~/claude-apply` inside Ubuntu's own filesystem (not `/mnt/c/...`) —
+avoids performance/permission issues when crossing the Windows/Linux boundary.
 
-**Why WSL2 instead of native Windows:** `claude-apply` is written assuming Linux/macOS
-throughout — its setup script, its Chrome-detection logic, and its shell-alias-based
-command registration (`chrome-apply`) all depend on a Unix-like environment. WSL2 gives
-the toolchain the exact environment it expects, eliminating an entire class of
-Windows-compatibility bugs rather than patching them one at a time.
+**Runtimes:** Node 20 via `nvm` (matching `.nvmrc`), Google Chrome installed inside Ubuntu
+via `apt` — fully separate from Windows Chrome.
 
-**Repo location:** `~/claude-apply` (i.e. `/home/rohan/claude-apply`) — inside Ubuntu's
-own filesystem, **not** reached through `/mnt/c/...`. Files living natively in Linux's
-filesystem avoid the performance and permission quirks of crossing the Windows/Linux
-boundary on every read/write, which matters for `npm install`, Playwright, and
-`scripts/setup.sh`.
-
-**Runtime versions:**
-- Node.js 20 (via `nvm`, matching the repo's `.nvmrc`) — installed inside Ubuntu,
-  independent of any Node version on the Windows side.
-- Google Chrome (`google-chrome-stable`), installed inside Ubuntu via `apt` from
-  Google's official repository — a **separate Chrome install from the everyday Windows
-  Chrome browser**. Ubuntu cannot see or use the Windows Chrome install.
-
-**Chrome CDP profile:** A dedicated, isolated Chrome profile used exclusively by this
-pipeline, launched via a shell alias:
+**Chrome CDP profile:** dedicated, isolated, launched via a `chrome-apply` alias in
+`~/.bashrc`:
 ```bash
 alias chrome-apply='"/usr/bin/google-chrome" --user-data-dir="/home/rohan/.config/google-chrome-claude-apply" --remote-debugging-port=9222 &'
 ```
-- Defined in `~/.bashrc`, active in every new Ubuntu terminal session automatically.
-- `--user-data-dir` isolates this profile's cookies, history, extensions, and saved
-  logins from any other Chrome profile — separate from personal browsing entirely.
-- `--remote-debugging-port=9222` exposes the Chrome DevTools Protocol (CDP) interface
-  that `src/apply/index.mjs` connects to for automated form-filling.
-- This profile is signed into the Gmail account designated for job applications, and
-  has the `claude-in-chrome` extension installed per the repo's setup instructions.
+Signed into the job-search Gmail account. `claude-in-chrome` extension installed in this
+profile per the repo's setup instructions (its exact role alongside the redesigned,
+code-driven Phase 4 below is still unconfirmed — see Open Items).
 
-**GitHub authentication (inside Ubuntu):** `gh` (GitHub CLI), authenticated via browser
-OAuth (`gh auth login`), authorized against the private fork `rohanaluri/claude-apply`.
-Separate from any Git credentials configured on the Windows side.
+**GitHub auth:** `gh auth login`, browser OAuth, against the private fork.
 
-**Known cosmetic log noise (not architecturally significant, do not debug further):**
-Chrome running under WSL2 without full GPU passthrough or a complete desktop
-environment logs harmless warnings on every launch — `WebGL1/WebGL2 blocklisted`, `dbus`/
-`UPower` service-not-found errors, Google push-notification registration errors,
-`Fontconfig` warnings, and `incorrect profile type` messages on new-tab loads. None of
-these affect the DOM-level automation Playwright performs against this Chrome instance.
+**Claude Code:** installed natively inside Ubuntu, separate from any Windows-side install.
 
-**What this environment is NOT used for:** The cloud Routine (Phases 1-3) does not run
-here — it runs on Anthropic-managed cloud infrastructure, cloning the GitHub repo fresh
-on each run. This local WSL2/Ubuntu environment is specifically where Phase 4 (the
-actual browser-based application submission) executes, since Chrome CDP automation
-inherently requires a real, local, authenticated browser session.
+**What doesn't run here:** Phases 1-3 run in the cloud Routine, cloning the repo fresh
+each run. This environment is specifically for Phase 4.
 
 ---
 
 ## 2. Architecture Diagram
 
 ```
-[6:30 AM — Claude Code Routine fires, cloud, PC off]
+[Cloud Routine fires — scan + score]
         │
         ▼
-PHASE 1 — Discovery & Prefilter (cloud, deterministic, $0 LLM)
+PHASE 1 — Discovery & Prefilter (cloud, deterministic, $0 AI)
   node src/scan/index.mjs
-  reads config/portals.yml → hits Greenhouse/Lever/Ashby public APIs
-  title filter: excludes Senior/Sr./Lead/Manager/Director/Staff/Principal/III/IV
+  reads config/portals.yml → hits Greenhouse/Lever/Ashby/Workable public APIs
+  title filter: excludes Senior/Lead/Manager/Director/Staff/Principal/III/IV
                 includes Associate/Junior/I/II/Entry-level/New Grad/Data Scientist
         │
-        ▼  data/pipeline.md (surviving postings)
+        ▼  data/pipeline.md
         │
-PHASE 2 — Combined Score + Essay Draft (cloud, 1 Claude API call/job, cached CV)
-  input: cached cv.md block + job posting text + any detected essay field
-  output (structured JSON): { score, why_fit[], essay_answer | null }
-  essay_answer populated ONLY if score >= 85
+PHASE 2 — Batched Score + Essay Draft (cloud, 1 AI call for the whole batch)
+  input: cv.md (once) + ALL pending job postings in one prompt
+  output: array of { url, score, why_fit[], essay_answer | null }
+  essay_answer populated ONLY for entries scoring >= 85
   → data/evaluations.jsonl
         │
         ▼  filter: score >= 85
         │
-PHASE 3 — Digest Email (cloud, Zapier MCP → Gmail)
-  markdown email per qualifying job:
-    company, title, score, why-you-fit bullets, essay snippet (if drafted),
-    /apply <url> command block
+PHASE 3 — Digest Email (cloud, Zapier MCP, $0 AI)
+  markdown email per qualifying job: company, title, score, why-fit bullets,
+  essay snippet, /apply <url> command block
         │
         ▼
-[You open your PC, read the email]
+[You review digest, pick a job, paste /apply <url> — WSL2/Ubuntu]
         │
         ▼
-PHASE 4 — Local Apply (human-in-the-loop, WSL2/Ubuntu, Chrome CDP)
-  you paste `/apply <url>` into Claude Code, running inside your Ubuntu terminal
-  → chrome-apply launches the dedicated, authenticated Chrome profile (CDP port 9222)
-    — this Chrome instance runs inside WSL2/Ubuntu, displayed natively on your
-      Windows desktop via WSLg
-  → node src/apply/index.mjs connects via CDP, drives the automation — token-free,
-    deterministic Playwright code, not an LLM call
-  → resume PDF attached via CDP upload
-  → essay answer injected from data/drafts/[job_id].json (already generated in
-    Phase 2 — reading a file here costs $0)
-  → HALTS at final review screen — TRIPWIRE, no auto-submit
-  → you verify, solve CAPTCHA if present, click Submit yourself
+PHASE 4 — Local Apply (WSL2/Ubuntu, 0-1 AI calls per application)
+  Step A ($0 AI): Playwright/CDP opens the page via chrome-apply, scans every
+    field, extracts label via dom-label.browser.js, classifies via
+    field-classifier.mjs
+  Step B ($0 AI): standard fields (name, email, phone, education, work auth,
+    EEO, etc.) filled directly from config/candidate-profile.yml — no AI call
+  Step C (1 AI call, ONLY if a genuine free-text/essay field exists on this
+    form): send that question + cv.md to Claude, get back an 80-150 word
+    grounded answer
+  Step D ($0 AI): resume PDF attached via upload-file.mjs (Playwright CDP,
+    bypasses page sandbox restrictions)
+  Step E (TRIPWIRE): halts unconditionally at the final review screen —
+    never clicks Submit
+  → you review, solve CAPTCHA if present, click Submit yourself
 ```
 
 ---
 
-## 3. Phase 1 — Discovery & Prefilter (Cloud, $0 LLM tokens)
-
-**Trigger:** Claude Code Routine, cron `30 6 * * *`, cloud infra — runs independently
-of the local WSL2/Ubuntu environment; the Routine clones the GitHub repo fresh on each
-run, it does not touch your local machine.
+## 3. Phase 1 — Discovery & Prefilter (Cloud, $0 AI)
 
 **Command:** `node src/scan/index.mjs`
 
-**Config — `config/portals.yml`:**
-```yaml
-companies:
-  - name: ExampleCo
-    ats: greenhouse
-    board_token: exampleco
-  - name: AnotherCo
-    ats: lever
-    org: anotherco
-  - name: ThirdCo
-    ats: ashby
-    org_slug: thirdco
-
-title_filter:
-  excluded_any:
-    - "Senior"
-    - "Sr."
-    - "Lead"
-    - "Manager"
-    - "Director"
-    - "Staff"
-    - "Principal"
-    - "III"
-    - "IV"
-  required_any:
-    - "Associate"
-    - "Junior"
-    - " I "
-    - " II "
-    - "Entry-level"
-    - "Entry Level"
-    - "New Grad"
-    - "Data Scientist"
-```
-
-Note: `required_any` includes "Data Scientist" itself, or the role-level keywords
-alone would pass through non-DS roles too. Use `/tune-filter` locally (inside the
-Ubuntu environment) once to calibrate against `data/scan-history.tsv` before trusting
-this unattended.
-
-**Confirmed working (dry run):** `node src/scan/index.mjs --dry-run`, executed inside
-the Ubuntu environment, ran successfully against the placeholder template companies —
-connected to real Lever API endpoints, correctly wrote zero files (per `--dry-run`),
-and correctly reported zero new postings since the template board slugs are placeholder
-values, not errors in the pipeline logic itself.
-
-**Output:** `data/pipeline.md` — new/undeduplicated postings only
-(dedup source of truth: `data/scan-history.tsv`).
-
-**Cost:** $0 in LLM tokens. Pure API polling + deterministic JS filtering.
+**Confirmed working** via `--dry-run` against placeholder companies — connected to real
+Lever endpoints, correctly wrote zero files, correctly found zero results (placeholder
+board slugs, not a bug). Real results require real companies in `config/portals.yml`
+(intentionally not filled in yet).
 
 ---
 
-## 4. Phase 2 — Combined Match Score + Conditional Essay Draft (Cloud)
+## 4. Phase 2 — Batched Score + Essay Draft (Cloud, 1 AI call per run)
 
-This is the one Claude-billed step, and it runs as part of the same cloud Routine as
-Phase 1 and Phase 3 — no local/Ubuntu involvement.
+**Trigger:** strict single daily cron run (e.g. 7:00 AM), not on-demand. Prevents
+accidentally exhausting the ~5 routine-run/day cap on Pro during testing or iteration.
 
-**Per-job call structure:**
+**Input text must be extracted, not raw HTML.** Job postings on real career pages often
+carry thousands of words of navigation, cookie banners, and site boilerplate around the
+actual description. Phase 1's scan step should extract just the core text — title,
+requirements, description — before anything reaches a prompt. This keeps every batch
+compact regardless of how bloated the source page is.
 
-- **System/cached block** (reused across every job in the batch — this is what
-  prompt caching targets): full contents of `config/cv.md`, plus scoring
-  instructions (score 1–100 on Python/SQL/Scikit-Learn/Pandas fit) and essay
-  grounding rules ("draft strictly from facts in the CV above, no invention").
-- **Per-job fresh input:** raw job posting text + any detected long-text/essay
-  form field label (e.g. `custom_question_1`, "Describe a complex data project
-  you completed").
-- **Requested output (structured JSON):**
-  ```json
-  {
-    "score": 91,
-    "why_fit": ["...", "...", "..."],
-    "essay_field_detected": "custom_question_1",
-    "essay_answer": "..."   // null unless score >= 85
-  }
-  ```
+**What needs to be built:** the repo's existing `src/score/index.mjs` has a `--batch`
+flag, but it *parallelizes* many separate `claude -p` calls (one per job) rather than
+combining them into a single prompt. Matching this design requires rewriting that batching
+logic to build one combined prompt for all pending offers instead.
 
-**Model instruction for essay gating:** the model is told explicitly in the
-cached system block: *"Only write a value for essay_answer if you have just
-scored this job 85 or above. Otherwise set essay_answer to null."* This keeps
-it a single round trip instead of a score-then-branch-then-draft pipeline,
-while still not spending generation effort on essays for rejected jobs.
+**Prompt caching not a priority here.** Since this is already one call for the whole
+batch, `cv.md` is only sent once regardless — there's no repeated prefix across separate
+calls to cache. (Caching matters more in Phase 4 — see Section 6.)
 
-**Output:** `data/evaluations.jsonl` (score, why_fit, essay per job)
-Essay text also persisted separately to `data/drafts/[job_id].json` for Phase 4
-to consume without re-parsing the full evaluations log. Because the cloud Routine
-commits/persists this repo state, Phase 4 (running locally in Ubuntu) can read
-`data/drafts/[job_id].json` after pulling the latest repo state.
+**Prompt shape (one call, whole batch):**
+```
+System: [cv.md] + scoring instructions (1-100, Python/SQL/Scikit-Learn/Pandas fit)
+        + "Only include essay_answer for entries scoring >= 85, else null"
+User:   [job 1 text], [job 2 text], ... [job N text], each tagged with its URL
+```
 
-**Cost:** ~$0.03/job baseline per the repo's existing pricing, reduced further
-by CV caching (the CV is the largest and most repetitive chunk of the prompt —
-caching removes its cost from every job after the first in a given routine run).
+**Response:**
+```json
+[
+  { "url": "...", "score": 91, "why_fit": ["...","...","..."], "essay_answer": "..." },
+  { "url": "...", "score": 62, "why_fit": ["...","...","..."], "essay_answer": null }
+]
+```
+
+**Output:** `data/evaluations.jsonl`, one line per job.
 
 ---
 
-## 5. Phase 3 — Digest Email (Cloud, Zapier MCP)
+## 5. Phase 3 — Digest Email (Cloud, Zapier MCP, $0 AI)
 
-**Filter:** `evaluations.jsonl` entries where `score >= 85`.
-
-**Delivery:** Zapier MCP Gmail connector, triggered at the end of the same
-cloud routine run (no separate schedule needed, no local involvement).
-
-**Per-job email block:**
-```
-### {Company} — {Job Title}
-**Match Score:** {score}/100
-
-**Why You Fit:**
-- {why_fit[0]}
-- {why_fit[1]}
-- {why_fit[2]}
-
-**Drafted Essay Answer (if applicable):**
-> {essay_answer snippet}
-
-Apply:
-```
-/apply {job_application_url}
-```
-```
+Filter `evaluations.jsonl` for `score >= 85`, send via the Zapier MCP Gmail connector
+(confirmed authorized). Email includes company, title, score, why-fit bullets, essay
+snippet, and an `/apply <url>` command block per qualifying job.
 
 ---
 
-## 6. Phase 4 — Local Apply (Human-in-the-Loop, WSL2/Ubuntu, TRIPWIRE)
+## 6. Phase 4 — Local Apply (WSL2/Ubuntu, 0-1 AI calls, TRIPWIRE)
 
-**Precondition:** Claude Code running inside your **Ubuntu terminal** (WSL2), with the
-`chrome-apply` alias available (defined in `~/.bashrc`, see Section 1). This launches
-the dedicated, CDP-enabled Chrome profile, signed in and with `claude-in-chrome`
-installed.
+**Precondition:** `chrome-apply` running (confirmed working — real Chrome window,
+authenticated, isolated profile, port 9222).
 
-**Trigger:** you paste `/apply <url>` from the digest email into Claude Code, running
-inside your Ubuntu terminal (not Windows PowerShell — the repo and its dependencies
-live in the Linux filesystem, per Section 1).
+**Step A — Scan the page ($0 AI, code confirmed to exist):**
+Playwright, connected via CDP, walks the page. Label extraction uses the real
+`dom-label.browser.js` script (injectable via `page.evaluate()`), which already handles
+Lever/Ashby/Greenhouse-specific label patterns plus generic `label[for]`/`aria-label`
+fallbacks.
 
-**Division of labor:**
-- **Claude Code's role is dispatch only.** `/apply <url>` is a slash command
-  that reads the instruction and invokes `node src/apply/index.mjs`. Claude
-  Code does not read the webpage, look at the DOM, or guide the cursor itself.
-  The one exception: the TRIPWIRE stop-condition (step 4 below) lives in this
-  dispatch layer — it's what prevents the script from proceeding to the
-  auto-submit call after the script halts.
-- **`src/apply/index.mjs` does the actual work, token-free.** Uses Playwright,
-  connecting over CDP to the already-running `chrome-apply` Chrome instance
-  (port 9222) — standard, deterministic browser automation, not an LLM. It finds
-  fields by matching labels/names/ids (e.g. `<input id="email">`) and types into
-  them directly. Zero AI tokens, $0.00, because this is classic code, not a model
-  decision. This Chrome instance runs inside WSL2/Ubuntu but displays as a normal
-  window on your Windows desktop via WSLg — you interact with it exactly as you
-  would any other browser window.
+**Step B — Classify and fill standard fields ($0 AI, code confirmed to exist):**
+`field-classifier.mjs`'s `classifyField()` matches each field against ~30 known patterns
+(email, phone, first/last name, education, work experience, work authorization,
+sponsorship, EEO questions, file uploads, etc.) and `mapProfileValue()` pulls the answer
+directly from `config/candidate-profile.yml`. **No AI call for any of this** — it's pure
+regex matching against your profile data. React-based custom dropdowns are handled by the
+separate `react-select-helper.mjs` snippet (also $0 AI, deterministic).
 
-**Steps:**
+**Step C — Free-text fields (1 AI call, only if needed):**
+Only fields `classifyField()` returns as `free_text` (a `<textarea>` matching no other
+pattern) need an actual generated answer. If a form has one or more such fields, one
+prompt is sent: the question(s) + `cv.md`, grounded, 80-150 words, "never invent
+experience." Many applications — those with only standard fields — will need **zero**
+AI calls in this step.
 
-1. Opens the job URL in the `chrome-apply` Chrome window via CDP.
-2. **Token-free** field classification and fill — deterministic label/name
-   pattern matching, not an LLM call. Name, email, phone, social links filled.
-   Resume PDF attached via CDP upload (bypasses page-level restrictions).
-3. **Essay injection — also token-free at this stage.** The $0.03 Claude spend
-   already happened once, overnight, in the cloud (Phase 2). By the time `/apply`
-   runs locally, the essay text is just a string sitting in
-   `data/drafts/[job_id].json`. The Playwright script reads that file and pastes
-   the string into the matching custom question box — no model call involved at
-   apply-time.
-4. **TRIPWIRE — patched behavior, differs from upstream repo:**
-   Halts unconditionally at the final review/submit screen. Does **not**
-   detect a confirmation page and does **not** update the tracker automatically,
-   because it never submits. This requires patching `src/apply/index.mjs` (or
-   equivalent) to remove/guard the auto-submit call that ships in upstream
-   `claude-apply`. **Not yet implemented — this is the current, active task.**
-5. You review the pre-filled form, solve any CAPTCHA, and click Submit
-   yourself. Tracker (`data/applications.md`, `data/apply-log.jsonl`) updates
-   only after your manual submission is detected, or you update it by hand.
+**Prompt caching applies here.** Unlike Phase 2, Phase 4 makes a separate call per
+application, and every one of those calls repeats the same `cv.md` + instructions prefix.
+Structuring this prompt with that fixed content first, unchanged across every
+application, lets caching cut the repeated input-token cost across a day's worth of
+applications — this is where caching actually earns its keep in this pipeline.
 
----
+**Step D — Resume upload ($0 AI, code confirmed to exist):**
+`upload-file.mjs` connects via Playwright's `connectOverCDP` and sets the file directly
+on the `<input type="file">` element — bypasses page-level upload restrictions. Genuinely
+tested, real CDP mechanics, not a placeholder.
 
-## 7. Open Items to Resolve
+**Step E — TRIPWIRE:**
+Halts unconditionally at the final review screen. Never calls Submit. You review, solve
+any CAPTCHA, and click Submit yourself.
 
-- [ ] **Code patch needed — not yet written.** `src/apply/index.mjs` still has
-      its upstream auto-submit behavior. Generate the specific line-level diff
-      that removes/guards the auto-submit call and replaces it with the
-      halt-at-review-screen behavior described in Decision #1 / Phase 4 step 4.
-      Do this with Claude Code running inside the Ubuntu environment, with the
-      actual file open, so the diff matches the real code.
-- [ ] **`config/cv.md` is currently a template, not your real CV.** Phase 2's
-      scoring and essay-drafting quality is entirely dependent on this file
-      being your actual, complete Associate Data Scientist profile — real
-      projects, real tools used (Python/SQL/Scikit-Learn/Pandas specifics),
-      real work history. This needs to be filled out before the first real
-      routine run — either by hand or via `/apply-onboard` with your CV PDF.
-- [ ] Calibrate `title_filter` with `/tune-filter` against real
-      `scan-history.tsv` data before trusting Phase 1 unattended.
-- [ ] **`config/` and `data/` are `.gitignore`'d by default in the repo
-      template.** Since the cloud Routine only sees what's committed to
-      GitHub, a gitignored `cv.md` will be invisible to Phase 2 at runtime.
-      Decide explicitly: commit `cv.md` to the private fork (fine, since it's
-      private), or find another way to make it available to the cloud
-      session. Don't let this surface as a silent Phase 2 failure on the
-      first real run.
-- [ ] Decide fallback behavior if Phase 2 returns fewer than expected due to
-      thin `required_any` matches.
-- [ ] Verify current Routines daily-run cap (5/day Pro, shared with interactive
-      usage) still fits your existing morning news briefing routine before
-      going live.
-- [ ] **Phase 1 dry-run output was in French** ("Entreprises scannées," etc.) —
-      cause not yet identified (possibly a locale setting picked up by the
-      Ubuntu install). Not blocking, but worth a quick look before relying on
-      this unattended, in case it affects log parsing anywhere downstream.
-- [ ] **Exact role of the `claude-in-chrome` extension is unconfirmed.** It was
-      installed because the repo's own setup instructions call for it, but the
-      Phase 4 design above has Playwright/CDP — not the extension — doing the
-      actual field-filling, token-free. Need to check whether the extension is
-      used elsewhere in the repo (e.g. `/apply-onboard`'s CV reading step, or
-      as a manual fallback for unsupported job sites) before assuming it's
-      load-bearing for the core `/apply` flow.
+**What still needs to be built:** none of the individual pieces above are missing — they
+all exist as real, working modules in the repo. What's missing is the **top-level script**
+that calls them in this order. The repo's current entry point for `/apply` is
+`.claude/commands/apply.md`, an AI-agent playbook that reads the page live instead of
+calling these modules directly — that's the piece to replace with a plain orchestration
+script.
 
 ---
 
-*This document reflects the agreed architecture as of this conversation, including
-the WSL2/Ubuntu local environment now in use. Day-to-day setup progress and
-troubleshooting history are tracked separately, not in this file. If anything
-architectural changes, edit this file rather than relying on chat history.*
+## 7. Verified Reusable Code Inventory
+
+Every file below was opened and read directly — not assumed from the README — to avoid
+repeating an earlier mistake where a described-but-unverified script turned out not to
+exist.
+
+| File | Confirmed contents | AI involved? |
+|---|---|---|
+| `field-classifier.mjs` | `classifyField()` — regex-matches ~30 field types; `mapProfileValue()` — maps to profile data | No |
+| `dom-label.mjs` / `dom-label.browser.js` | `extractLabel()` — finds a field's human label across multiple ATS-specific patterns; `clickInQuestion()` — clicks a radio/checkbox by matched question+choice text | No |
+| `react-select-helper.mjs` | `REACT_SELECT_SNIPPET` — opens and selects from React-Select-style custom dropdowns | No |
+| `upload-file.mjs` | `uploadFile()` — genuine Playwright `connectOverCDP` file upload | No |
+| `step-detect.mjs` | `detectStep()` — detects which page of a multi-step flow you're on via URL/DOM markers shaped like Workday's flow | No (but see Open Items — conflicts with README) |
+| `confirmation-detector.mjs` | Old success/fail page detection — confirmed dead code, not called since the auto-submit tripwire patch | No |
+| `accounts.mjs` | Generates/stores per-ATS email aliases + random passwords for platforms requiring account creation | No |
+| `language-detect.mjs` | Detects French vs. English from job posting text; **defaults to French when ambiguous** | No |
+| `cover-letter.mjs` / `letter-generator.mjs` | Optional cover-letter generation — calls `claude -p` (same subscription billing as Phase 2) | **Yes, if used** |
+| `apply-log.mjs` | Simple JSON-line logging of each apply attempt | No |
+
+---
+
+## 8. Open Items
+
+- [ ] **Top-level Phase 4 orchestration script doesn't exist yet.** All the pieces in
+      Section 7 are real, but nothing currently calls them in sequence outside of the
+      agent-driven `apply.md`. This is the main thing to build.
+- [ ] **Phase 2 batching code doesn't exist yet.** Needs a rewrite of `src/score/index.mjs`
+      to build one combined prompt instead of parallel per-job calls.
+- [ ] **Workday step-detection conflict.** `step-detect.mjs` contains real, Workday-shaped
+      step signatures, but the README explicitly says "`/apply` support not yet
+      implemented" for Workday. Don't assume Workday applications work until this is
+      resolved directly — the code may be partial/unused scaffolding.
+- [ ] **Account-creation flow (`accounts.mjs`) isn't accounted for in this design yet.**
+      Some ATS platforms require creating a login before applying — this needs a step in
+      the Phase 4 flow we haven't designed.
+- [ ] **`claude-in-chrome` extension's exact role is still unclear** now that Phase 4 is
+      code-driven rather than agent-driven. May not be needed at all for the new design —
+      needs confirming before assuming it's required.
+- [ ] **`config/cv.md`, `config/candidate-profile.yml`, `config/portals.yml` are still
+      templates.** Real data needed before either phase produces meaningful output.
+- [ ] **`config/` and `data/` are `.gitignore`'d by default** — `cv.md` needs to be
+      explicitly committed to the private fork for the cloud Routine to see it.
+- [ ] **Verify `jdMaxTokens: 1500` in `src/score/index.mjs` does smart extraction, not
+      a blunt cutoff.** If it just truncates raw scraped text at a token count, it could
+      cut off mid-requirements or waste budget on boilerplate before the real content —
+      needs reading the actual truncation logic, not assumed from the flag name.
+- [ ] **Phase 4's prompt-caching structure isn't implemented yet** — needs the free-text
+      call built with `cv.md`/instructions as a stable prefix from the start, not
+      retrofitted later.
+- [ ] Confirm Claude Code Routines' daily run cap (previously found to be ~5/day on Pro,
+      shared with all Claude Code/chat usage) comfortably fits a single daily 7:00 AM
+      trigger plus normal interactive development usage.
+
+---
+
+*Every code claim in this document was verified by opening the actual file — either
+directly, or pasted from the user's local clone when direct access wasn't possible.
+If anything here turns out to be wrong, verify by reading the real file again before
+changing the design — don't reason from the README or from what a related file implies.*

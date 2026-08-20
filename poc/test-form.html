@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Mock Job Application — POC Test Form</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+    .field { margin-bottom: 18px; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    input, textarea, select { width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box; }
+    textarea { min-height: 120px; }
+    h1 { font-size: 20px; }
+    .note { color: #666; font-size: 13px; margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+  <h1>Associate Data Scientist — Application (MOCK)</h1>
+  <p class="note">Local test form for POC. Nothing here submits anywhere.</p>
+
+  <form id="application-form">
+    <div class="field">
+      <label for="first_name">First Name</label>
+      <input type="text" id="first_name" name="first_name" />
+    </div>
+
+    <div class="field">
+      <label for="last_name">Last Name</label>
+      <input type="text" id="last_name" name="last_name" />
+    </div>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" />
+    </div>
+
+    <div class="field">
+      <label for="phone">Phone Number</label>
+      <input type="tel" id="phone" name="phone" />
+    </div>
+
+    <div class="field">
+      <label for="linkedin">LinkedIn Profile</label>
+      <input type="text" id="linkedin" name="linkedin" />
+    </div>
+
+    <div class="field">
+      <label for="school">University / School</label>
+      <input type="text" id="school" name="school" />
+    </div>
+
+    <div class="field">
+      <label for="work_auth">Are you authorized to work in the US?</label>
+      <input type="text" id="work_auth" name="work_authorization" />
+    </div>
+
+    <div class="field">
+      <label for="essay">Describe a data project you completed and the impact it had.</label>
+      <textarea id="essay" name="custom_question_1"></textarea>
+    </div>
+
+    <!-- Intentionally NO submit button wired up for the POC. -->
+  </form>
+</body>
+</html>
