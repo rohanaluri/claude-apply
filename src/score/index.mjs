@@ -6,15 +6,20 @@
 //   --json-input <path>   Read pre-built offer JSON instead of fetching
 //   --id NNN          Force evaluation id (default: auto-increment)
 //   --re-score        Re-evaluate a URL already in evaluations.jsonl; preserves existing id
-// Builds prompt, calls `claude -p` CLI, parses JSON response,
-// appends or updates in-place data/evaluations.jsonl + data/tracker-additions/<id>-<slug>.tsv.
+//   --batch           Score ALL pending offers from data/pipeline.md in ONE claude call
+//
+// PHASE 2 REWRITE: --batch now builds a SINGLE prompt containing the CV once plus
+// every pending offer, and makes ONE `claude -p` call for the whole run. The previous
+// implementation looped one call per job with parallel workers (--parallel), which
+// re-sent the CV N times and cost N calls. --parallel is now accepted but ignored,
+// with a warning, so old invocations don't hard-fail.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { buildPrompt } from './prompt-builder.mjs';
+import { buildPrompt, buildBatchPrompt } from './prompt-builder.mjs';
 import { extractLocation } from './location-extractor.mjs';
 import { appendJsonl, appendFilteredOut, updateJsonlEntry } from '../lib/jsonl-writer.mjs';
 import { writeTrackerTsv, removeTrackerTsvById } from '../lib/tsv-writer.mjs';
@@ -52,8 +57,8 @@ async function fetchOfferBody(url) {
       userAgent:
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: 1366, height: 900 },
-      locale: 'fr-FR',
-      extraHTTPHeaders: { 'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8' },
+      locale: 'en-US',
+      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
     });
     const page = await ctx.newPage();
 
@@ -231,13 +236,54 @@ export function computeVerdict(score, threshold = DEFAULT_AUTO_APPLY_MIN_SCORE) 
   return score >= threshold ? 'apply' : 'skip';
 }
 
+// Normalizes `reason` to a single string for storage/back-compat.
+// The prompt now asks for an array of short bullets; older prompts (and the
+// single-offer path) may still return a plain string. Accept both.
+function normalizeReason(reason) {
+  if (Array.isArray(reason)) return reason.filter(Boolean).join(' | ');
+  if (typeof reason === 'string') return reason;
+  throw new Error('Invalid reason field');
+}
+
 export function parseScoreJson(raw) {
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error(`No JSON in LLM response: ${raw}`);
   const obj = JSON.parse(match[0]);
   if (typeof obj.score !== 'number') throw new Error('Invalid score field');
-  if (typeof obj.reason !== 'string') throw new Error('Invalid reason field');
-  return { score: obj.score, reason: obj.reason };
+  return { score: obj.score, reason: normalizeReason(obj.reason) };
+}
+
+// Parses the batched response: a JSON ARRAY of {url, score, reason}.
+// Returns a Map keyed by url so results can be matched back to their offer
+// regardless of the order Claude returned them in.
+export function parseBatchScoreJson(raw, expectedUrls = []) {
+  const match = raw.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error(`No JSON array in LLM response: ${raw.slice(0, 300)}`);
+  const arr = JSON.parse(match[0]);
+  if (!Array.isArray(arr)) throw new Error('Batch response is not an array');
+
+  const byUrl = new Map();
+  for (const entry of arr) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (typeof entry.score !== 'number') continue;
+    if (typeof entry.url !== 'string' || !entry.url.trim()) continue;
+    byUrl.set(entry.url.trim(), {
+      score: entry.score,
+      reason: normalizeReason(entry.reason),
+    });
+  }
+
+  // Tolerate near-miss urls (trailing slash, whitespace) by matching loosely
+  // against the urls we actually sent, rather than dropping the score.
+  for (const expected of expectedUrls) {
+    if (byUrl.has(expected)) continue;
+    const loose = [...byUrl.keys()].find(
+      (k) => k.replace(/\/+$/, '') === expected.replace(/\/+$/, '')
+    );
+    if (loose) byUrl.set(expected, byUrl.get(loose));
+  }
+
+  return byUrl;
 }
 
 function nextId(evaluationsPath) {
@@ -371,22 +417,10 @@ export function parseScoreArgs(argv) {
   return flags;
 }
 
-function formatProgress(index, total, offer, result) {
-  const num = `[${index}/${total}]`;
-  const label = `${offer.company} — ${offer.title}`;
-  if (result.skipped) {
-    return `[batch]  ${num} ✗ ${label.padEnd(45)} ${result.reason}`;
-  }
-  if (result.error) {
-    return `[batch]  ${num} ✗ ${label.padEnd(45)} error: ${result.error}`;
-  }
-  return `[batch]  ${num} ✓ ${label.padEnd(45)} ${result.score} ${result.verdict}`;
-}
-
 function printScoreHelp() {
   console.log(`Usage: /score <url> [options]
        /score --from-pipeline
-       /score --batch [--parallel <n>]
+       /score --batch
        /score --json-input <path>
 
 LLM-evaluate one or more offers against config/cv.md.
@@ -394,10 +428,11 @@ LLM-evaluate one or more offers against config/cv.md.
 Flags:
   --re-score             Re-evaluate a URL already in evaluations.jsonl
                          (preserves the existing id).
-  --batch                Score all unscored offers from data/pipeline.md.
-                         Mutually exclusive with --from-pipeline and <url>.
-  --parallel <n>         With --batch, run <n> evaluations concurrently.
-                         Implies --batch. Default: 5.
+  --batch                Score all unscored offers from data/pipeline.md in a
+                         SINGLE claude call (CV sent once, all offers in one
+                         prompt). Mutually exclusive with --from-pipeline and <url>.
+  --parallel <n>         DEPRECATED, ignored. Batching is now one single call;
+                         there is nothing to parallelize. Implies --batch.
   --from-pipeline        Score a single offer selected from data/pipeline.md.
                          Mutually exclusive with --batch and <url>.
   --json-input <path>    Read a pre-built offer JSON instead of fetching.
@@ -410,7 +445,7 @@ Flags:
 
 Files:
   reads:  config/cv.md, config/candidate-profile.yml
-  writes: data/evaluations.jsonl  (one JSON line per invocation)
+  writes: data/evaluations.jsonl  (one JSON line per offer)
 
 See also: /explain, /dashboard
           docs/score-workflow.md`);
@@ -433,6 +468,9 @@ async function main() {
     process.exit(2);
   }
 
+  // ---------------------------------------------------------------------
+  // BATCH PATH — ONE claude call for every pending offer.
+  // ---------------------------------------------------------------------
   if (flags.batch) {
     const pipelinePath = path.join(DATA_DIR, 'pipeline.md');
     const evalPath = path.join(DATA_DIR, 'evaluations.jsonl');
@@ -454,166 +492,170 @@ async function main() {
     requireConfig(path.join(CONFIG_DIR, 'cv.md'));
     const { profile, cvMarkdown } = await loadProfile(CONFIG_DIR);
 
-    let nextAvailId = parseInt(nextId(evalPath), 10);
-    const writeLock = pLimit(1);
-    const limit = pLimit(flags.parallel);
     const startTime = Date.now();
+    console.error(
+      `[batch] ${flags.reScore ? 'Re-scoring' : 'Scoring'} ${pending.length} offers in ONE claude call...`
+    );
 
-    let completed = 0;
-    let countScored = 0;
-    let countRescored = 0;
+    // --- Step 1: fetch + liveness-filter every offer (deterministic, $0 AI) ---
+    const liveOffers = [];
     let countFiltered = 0;
     let countKeptClosed = 0;
-    let countError = 0;
+    let countFetchError = 0;
+
+    for (const offer of pending) {
+      try {
+        const existing = flags.reScore ? findEvaluationByUrl(evalPath, offer.url) : null;
+        const isRescore = !!existing;
+        const fetched = await fetchOfferBody(offer.url);
+        const extracted = extractLocation({
+          ldJsonBlocks: fetched.ldJsonBlocks,
+          ogLocation: fetched.ogLocation,
+          cssLocation: fetched.cssLocation,
+          bodyText: fetched.body,
+        });
+        const pipelineLoc = trimLoc(offer.location);
+        const fullOffer = {
+          ...offer,
+          finalUrl: fetched.finalUrl,
+          status: fetched.status,
+          body: fetched.body,
+          location: pipelineLoc || extracted.location,
+          metadata_source: 'pipeline',
+          _existing: existing,
+          _isRescore: isRescore,
+        };
+
+        const liveness = detectClosedPage(fullOffer);
+        if (liveness.closed) {
+          if (isRescore) {
+            countKeptClosed++;
+            console.error(
+              `[batch]  ⊘ ${offer.company} — ${offer.title}: kept (closed: ${liveness.reason})`
+            );
+            continue;
+          }
+          const date = new Date().toISOString().slice(0, 10);
+          appendFilteredOut(path.join(DATA_DIR, 'filtered-out.tsv'), {
+            date,
+            url: offer.url,
+            company: offer.company || 'unknown',
+            title: offer.title || '',
+            reason: `liveness: ${liveness.reason}`,
+          });
+          countFiltered++;
+          console.error(`[batch]  ✗ ${offer.company} — ${offer.title}: ${liveness.reason}`);
+          continue;
+        }
+
+        liveOffers.push(fullOffer);
+      } catch (err) {
+        countFetchError++;
+        console.error(`[batch]  ✗ ${offer.company} — ${offer.title}: fetch error: ${err.message}`);
+      }
+    }
+
+    if (liveOffers.length === 0) {
+      console.error('[batch] No live offers left to score after filtering.');
+      return;
+    }
+
+    // --- Step 2: ONE claude call for all live offers ---
+    console.error(`[batch] Sending ${liveOffers.length} offers to claude in one prompt...`);
+    const { system, user } = buildBatchPrompt({
+      cvMarkdown,
+      offers: liveOffers,
+      jdMaxTokens: 1500,
+    });
+
+    let byUrl;
+    try {
+      const raw = await callClaudeAsync(system, user);
+      byUrl = parseBatchScoreJson(
+        raw,
+        liveOffers.map((o) => o.url)
+      );
+    } catch (err) {
+      console.error(`[batch] FAILED: ${err.message}`);
+      process.exit(3);
+    }
+
+    // --- Step 3: write results (deterministic, $0 AI) ---
+    let nextAvailId = parseInt(nextId(evalPath), 10);
+    const date = new Date().toISOString().slice(0, 10);
+    let countScored = 0;
+    let countRescored = 0;
+    let countMissing = 0;
     let countApply = 0;
     let countSkip = 0;
 
-    console.error(
-      `[batch] ${flags.reScore ? 'Re-scoring' : 'Scoring'} ${pending.length} offers (${flags.parallel} parallel workers)...`
-    );
+    for (const offer of liveOffers) {
+      const result = byUrl.get(offer.url);
+      if (!result) {
+        countMissing++;
+        console.error(`[batch]  ! no score returned for ${offer.company} — ${offer.title}`);
+        continue;
+      }
 
-    const tasks = pending.map((offer) => {
-      return limit(async () => {
-        try {
-          const existing = flags.reScore ? findEvaluationByUrl(evalPath, offer.url) : null;
-          const isRescore = !!existing;
-          const fetched = await fetchOfferBody(offer.url);
-          const extracted = extractLocation({
-            ldJsonBlocks: fetched.ldJsonBlocks,
-            ogLocation: fetched.ogLocation,
-            cssLocation: fetched.cssLocation,
-            bodyText: fetched.body,
-          });
-          const pipelineLoc = trimLoc(offer.location);
-          const fullOffer = {
-            ...offer,
-            finalUrl: fetched.finalUrl,
-            status: fetched.status,
-            body: fetched.body,
-            location: pipelineLoc || extracted.location,
-            metadata_source: 'pipeline',
-          };
+      const verdict = computeVerdict(
+        result.score,
+        profile?.auto_apply_min_score ?? DEFAULT_AUTO_APPLY_MIN_SCORE
+      );
+      const id = offer._isRescore ? offer._existing.id : String(nextAvailId++).padStart(3, '0');
 
-          const liveness = detectClosedPage(fullOffer);
-          if (liveness.closed) {
-            if (isRescore) {
-              completed++;
-              countKeptClosed++;
-              const label = `${offer.company} — ${offer.title}`;
-              console.error(
-                `[batch]  [${completed}/${pending.length}] ⊘ ${label.padEnd(45)} kept (closed: ${liveness.reason})`
-              );
-              return null;
-            }
-            const date = new Date().toISOString().slice(0, 10);
-            await writeLock(async () =>
-              appendFilteredOut(path.join(DATA_DIR, 'filtered-out.tsv'), {
-                date,
-                url: offer.url,
-                company: offer.company || 'unknown',
-                title: offer.title || '',
-                reason: `liveness: ${liveness.reason}`,
-              })
-            );
-            completed++;
-            countFiltered++;
-            console.error(
-              formatProgress(completed, pending.length, offer, {
-                skipped: true,
-                reason: liveness.reason,
-              })
-            );
-            return null;
-          }
+      const record = {
+        id,
+        date,
+        company: offer.company || 'unknown',
+        role: offer.title || 'unknown',
+        url: offer.url || '',
+        location: offer.location ?? null,
+        metadata_source: 'pipeline',
+        score: result.score,
+        verdict,
+        reason: result.reason,
+        status: 'Evaluated',
+      };
 
-          const { system, user } = buildPrompt({
-            cvMarkdown,
-            offer: fullOffer,
-            jdMaxTokens: 1500,
-          });
-          const raw = await callClaudeAsync(system, user);
-          const scoredResult = parseScoreJson(raw);
-          const verdict = computeVerdict(
-            scoredResult.score,
-            profile?.auto_apply_min_score ?? DEFAULT_AUTO_APPLY_MIN_SCORE
-          );
-
-          const date = new Date().toISOString().slice(0, 10);
-
-          let id;
-          await writeLock(async () => {
-            id = isRescore ? existing.id : String(nextAvailId++).padStart(3, '0');
-          });
-
-          const record = {
-            id,
-            date,
-            company: fullOffer.company || 'unknown',
-            role: fullOffer.title || 'unknown',
-            url: fullOffer.url || '',
-            location: fullOffer.location ?? null,
-            metadata_source: 'pipeline',
-            score: scoredResult.score,
-            verdict,
-            reason: scoredResult.reason,
-            status: 'Evaluated',
-          };
-
-          await writeLock(async () => {
-            if (isRescore) {
-              updateJsonlEntry(evalPath, (e) => e.url === record.url, record);
-              removeTrackerTsvById(tsvDir, id);
-            } else {
-              appendJsonl(evalPath, record);
-            }
-            writeTrackerTsv(tsvDir, {
-              num: id,
-              date,
-              company: record.company,
-              role: record.role,
-              score: scoredResult.score,
-              notes: scoredResult.reason,
-            });
-          });
-
-          completed++;
-          if (isRescore) countRescored++;
-          else countScored++;
-          if (verdict === 'apply') countApply++;
-          else countSkip++;
-          const marker = isRescore ? '↻' : '✓';
-          const label = `${offer.company} — ${offer.title}`;
-          console.error(
-            `[batch]  [${completed}/${pending.length}] ${marker} ${label.padEnd(45)} ${scoredResult.score} ${verdict}`
-          );
-          console.log(JSON.stringify(record));
-          return record;
-        } catch (err) {
-          completed++;
-          countError++;
-          console.error(formatProgress(completed, pending.length, offer, { error: err.message }));
-          return null;
-        }
+      if (offer._isRescore) {
+        updateJsonlEntry(evalPath, (e) => e.url === record.url, record);
+        removeTrackerTsvById(tsvDir, id);
+        countRescored++;
+      } else {
+        appendJsonl(evalPath, record);
+        countScored++;
+      }
+      writeTrackerTsv(tsvDir, {
+        num: id,
+        date,
+        company: record.company,
+        role: record.role,
+        score: result.score,
+        notes: result.reason,
       });
-    });
 
-    await Promise.allSettled(tasks);
+      if (verdict === 'apply') countApply++;
+      else countSkip++;
+
+      const marker = offer._isRescore ? '↻' : '✓';
+      const label = `${offer.company} — ${offer.title}`;
+      console.error(`[batch]  ${marker} ${label.padEnd(45)} ${result.score} ${verdict}`);
+      console.log(JSON.stringify(record));
+    }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-    if (flags.reScore) {
-      console.error(
-        `[batch] Done: ${countRescored} re-scored, ${countScored} scored, ${countFiltered} filtered, ${countKeptClosed} kept (closed), ${countError} error (${pending.length} total)`
-      );
-    } else {
-      console.error(
-        `[batch] Done: ${countScored} scored, ${countFiltered} filtered, ${countError} error (${pending.length} total)`
-      );
-    }
+    console.error(
+      `[batch] Done: ${countScored} scored, ${countRescored} re-scored, ${countFiltered} filtered, ` +
+        `${countKeptClosed} kept (closed), ${countFetchError} fetch errors, ${countMissing} missing scores`
+    );
     console.error(`[batch] Results: ${countApply} apply, ${countSkip} skip`);
-    console.error(`[batch] Time: ${elapsed}s (${flags.parallel} parallel workers)`);
+    console.error(`[batch] Time: ${elapsed}s — 1 claude call total`);
     return;
   }
 
+  // ---------------------------------------------------------------------
+  // SINGLE-OFFER PATH — unchanged from the original implementation.
+  // ---------------------------------------------------------------------
   let offer;
   if (flags.jsonInput) {
     offer = JSON.parse(fs.readFileSync(flags.jsonInput, 'utf8'));

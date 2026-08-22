@@ -3,7 +3,7 @@
 Base repo: https://github.com/LeoLaborie/claude-apply (forked to `rohanaluri/claude-apply`, private)
 Orchestration: Claude Code Routines (cloud, Anthropic-managed)
 Local execution environment: WSL2 (Ubuntu) on a Windows host
-Notification: Zapier MCP → Gmail
+Notification: Zapier Webhook → Gmail
 
 ---
 
@@ -18,8 +18,10 @@ Notification: Zapier MCP → Gmail
    authorization, EEO questions, etc.) and pulls the answer straight from your profile
    data. Only genuine open-ended essay questions need an actual AI-written answer.
 3. **Phase 2 (scoring) is batched into one call per scan run**, not one call per job. All
-   pending postings + your CV go into a single prompt; Claude returns an array of scores.
-   Essay drafting for the digest email stays in this same call, gated at score ≥ 85.
+   pending postings + your CV go into a single prompt; Claude returns an array of
+   `{score, reason}` — no essay drafting happens here (see Decision #11: essay drafting
+   was consolidated into Phase 4 only, to avoid paying for an essay on jobs you never
+   actually apply to, and because Phase 2 can't know the real form question anyway).
 4. **Phase 4 (apply) makes at most one AI call per application** — only if that specific
    form has a genuine free-text/essay question the classifier can't answer from profile
    data. Many applications may need zero AI calls entirely.
@@ -37,15 +39,51 @@ Notification: Zapier MCP → Gmail
    it ever reaches a prompt. `src/score/index.mjs` already caps job text at
    `jdMaxTokens: 1500` — needs verifying whether that's smart extraction or a blunt
    cutoff (see Open Items).
-9. **Prompt caching is used where it actually helps: Phase 4, not Phase 2.** Phase 2 is
-   already one batched call, so `cv.md` is only sent once regardless — caching has
-   little to add there. Phase 4 makes a separate call per application, each repeating
-   the same `cv.md` prefix, so structuring that prompt with `cv.md` and core instructions
-   as a fixed, cacheable prefix (unchanged across applications) is where caching earns
-   its keep — cutting repeated input-token cost across a day's worth of applications.
+9. **Prompt caching is NOT implemented — deliberately skipped.** Investigated whether
+   Phase 4's per-application `claude -p` calls could use prompt caching to cut repeated
+   `cv.md` cost. Confirmed via the official Claude Code CLI reference that `claude -p`
+   has no flag for manually setting `cache_control` breakpoints — that's a raw
+   Anthropic Messages API feature, and the CLI builds its own request internally without
+   exposing that control. Getting real caching would mean bypassing `claude -p` entirely
+   for Phase 4 and calling `api.anthropic.com` directly with a paid API key — the same
+   extra infrastructure Decision #5 already decided wasn't worth it at current volume
+   (~3 applications/day). Chose to keep using `claude -p` as-is, uncached. Revisit only
+   if volume grows enough that caching's savings would outweigh the added complexity.
 10. **Phases 1-3 run on a strict single daily cron trigger** (e.g. 7:00 AM once/day) —
     not on-demand, not multiple times while testing. This protects the ~5 routine-run/day
     cap on Pro from being burned accidentally during development.
+11. **Essay drafting happens ONLY in Phase 4, never in Phase 2.** Originally Phase 2 also
+    drafted an essay for every job scoring ≥85, for a digest-email preview. Removed
+    because: (a) it charges an AI call for every qualifying job even if you never click
+    `/apply` on most of them, and (b) Phase 2 doesn't know the real free-text question a
+    specific ATS form will actually ask — Phase 4 discovers that live when it scans the
+    real page. Phase 4's Step C (see Section 6) is now the single place an essay answer
+    ever gets written, only for the job you're actually applying to, using the real
+    question text.
+12. **No cloud Routine exists yet for this project.** The only Routine currently
+    configured on this account is an unrelated morning news briefing — useful only as a
+    reference for *how* to structure a Routine, not something this pipeline builds on
+    top of. Creating the real Routine for Phases 1-3 is still fully unbuilt (see Open
+    Items).
+13. **Phase 3 sends via a plain Zapier webhook, not Zapier MCP.** Confirmed: MCP tools
+    can only be invoked by Claude during a conversation turn — there's no way for
+    deterministic Node code to call one directly. Since Phase 3 has no AI in it at all,
+    routing it through MCP would mean spinning up a Claude turn just to send an
+    already-fully-formatted email. A plain `fetch()` POST to a pre-built Zapier
+    webhook ("Webhook trigger → Send Gmail") is simpler, cheaper, and genuinely $0 AI.
+14. **Score schema confirmed from the real code, not redesigned:** `{score, reason}`,
+    where `score` is **0-10** (not 1-100 — corrected from an earlier wrong assumption
+    in this doc) and `reason` is 2-3 short bullets joined into one string with `" | "`
+    as the delimiter, for storage/back-compat with the existing TSV tracker and JSONL
+    format. `computeVerdict()` and `DEFAULT_AUTO_APPLY_MIN_SCORE = 7` already depend on
+    the 0-10 scale — changing it would silently break the apply/skip threshold, so the
+    scale was kept as-is rather than "upgraded."
+15. **The original repo's Phase 2 prompt was written for a different person entirely** —
+    a French engineering student applying to 6-month internships ("stage"), not a US
+    Associate Data Scientist full-time search. This also explained the earlier mystery of
+    French text appearing in Phase 1's dry-run output. Rewrote `SYSTEM`/`CRITERIA` in
+    `prompt-builder.mjs` in English for the actual target profile; dropped the
+    internship-specific "6 month duration" red flag rule.
 
 ---
 
@@ -73,6 +111,19 @@ code-driven Phase 4 below is still unconfirmed — see Open Items).
 
 **Claude Code:** installed natively inside Ubuntu, separate from any Windows-side install.
 
+**Playwright's headless Chrome (separate from `chrome-apply`):** Phase 2's scoring step
+uses `playwright`'s own headless Chromium to fetch job posting pages — this is a
+**completely separate browser install** from the CDP-controlled Chrome `chrome-apply`
+launches for Phase 4. Installed via `npx playwright install chromium`. Hit a real,
+current compatibility gap: Playwright does not yet officially support Ubuntu 26.04
+(confirmed via Microsoft's own issue tracker — other users hitting the identical error
+at the same time). Fixed with the documented workaround, telling Playwright to use its
+Ubuntu 24.04 build instead:
+```bash
+export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64   # add to ~/.bashrc — needed at runtime, not just install
+npx playwright install chromium
+```
+
 **What doesn't run here:** Phases 1-3 run in the cloud Routine, cloning the repo fresh
 each run. This environment is specifically for Phase 4.
 
@@ -80,49 +131,34 @@ each run. This environment is specifically for Phase 4.
 
 ## 2. Architecture Diagram
 
+```mermaid
+flowchart TD
+    A["Cloud Routine fires<br/>7:00 AM daily, PC off"] --> B["<b>Phase 1 — Discovery & Prefilter</b><br/>cloud, deterministic, $0 AI"]
+    B -->|"node src/scan/index.mjs<br/>reads portals.yml → Greenhouse/Lever/Ashby<br/>title filter: role level"| C[("data/pipeline.md")]
+    C --> D["<b>Phase 2 — Batched Scoring</b><br/>cloud, ONE AI call for the whole batch"]
+    D -->|"cv.md once + ALL postings<br/>→ array of score + reason"| E[("data/evaluations.jsonl")]
+    E -->|"filter: score ≥ 7 (of 10)"| F["<b>Phase 3 — Digest Email</b><br/>cloud, Zapier Webhook, $0 AI"]
+    F --> G["📧 You review digest<br/>pick a job, paste /apply url"]
+    G --> H["<b>Phase 4 — Local Apply</b><br/>WSL2/Ubuntu, 0–1 AI calls"]
+    H --> H1["Step A — scan every field<br/>💲0 AI"]
+    H1 --> H2["Step B — fill known fields<br/>from profile · 💲0 AI"]
+    H2 --> H3["Step C — 1 AI call<br/>ONLY if a real free-text field exists"]
+    H3 --> H4["Step D — upload resume<br/>💲0 AI"]
+    H4 --> H5["🛑 Step E — TRIPWIRE<br/>halt · never clicks Submit"]
+    H5 --> I["✅ You review, solve CAPTCHA,<br/>click Submit yourself"]
+
+    classDef free fill:#e0f2e9,stroke:#2f855a,color:#1a1a1a
+    classDef ai fill:#e6eefc,stroke:#2b6cb0,color:#1a1a1a
+    classDef human fill:#fff7e6,stroke:#c05621,color:#1a1a1a
+    classDef tripwire fill:#fde2e1,stroke:#c53030,color:#1a1a1a,font-weight:bold
+
+    class B,C,H1,H2,H4 free
+    class D,E,H3 ai
+    class A,F,G,I human
+    class H5 tripwire
 ```
-[Cloud Routine fires — scan + score]
-        │
-        ▼
-PHASE 1 — Discovery & Prefilter (cloud, deterministic, $0 AI)
-  node src/scan/index.mjs
-  reads config/portals.yml → hits Greenhouse/Lever/Ashby/Workable public APIs
-  title filter: excludes Senior/Lead/Manager/Director/Staff/Principal/III/IV
-                includes Associate/Junior/I/II/Entry-level/New Grad/Data Scientist
-        │
-        ▼  data/pipeline.md
-        │
-PHASE 2 — Batched Score + Essay Draft (cloud, 1 AI call for the whole batch)
-  input: cv.md (once) + ALL pending job postings in one prompt
-  output: array of { url, score, why_fit[], essay_answer | null }
-  essay_answer populated ONLY for entries scoring >= 85
-  → data/evaluations.jsonl
-        │
-        ▼  filter: score >= 85
-        │
-PHASE 3 — Digest Email (cloud, Zapier MCP, $0 AI)
-  markdown email per qualifying job: company, title, score, why-fit bullets,
-  essay snippet, /apply <url> command block
-        │
-        ▼
-[You review digest, pick a job, paste /apply <url> — WSL2/Ubuntu]
-        │
-        ▼
-PHASE 4 — Local Apply (WSL2/Ubuntu, 0-1 AI calls per application)
-  Step A ($0 AI): Playwright/CDP opens the page via chrome-apply, scans every
-    field, extracts label via dom-label.browser.js, classifies via
-    field-classifier.mjs
-  Step B ($0 AI): standard fields (name, email, phone, education, work auth,
-    EEO, etc.) filled directly from config/candidate-profile.yml — no AI call
-  Step C (1 AI call, ONLY if a genuine free-text/essay field exists on this
-    form): send that question + cv.md to Claude, get back an 80-150 word
-    grounded answer
-  Step D ($0 AI): resume PDF attached via upload-file.mjs (Playwright CDP,
-    bypasses page sandbox restrictions)
-  Step E (TRIPWIRE): halts unconditionally at the final review screen —
-    never clicks Submit
-  → you review, solve CAPTCHA if present, click Submit yourself
-```
+
+*Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdown Preview Mermaid Support" extension if it doesn't render in the preview tab shown above.*
 
 ---
 
@@ -137,50 +173,87 @@ board slugs, not a bug). Real results require real companies in `config/portals.
 
 ---
 
-## 4. Phase 2 — Batched Score + Essay Draft (Cloud, 1 AI call per run)
+## 4. Phase 2 — Batched Scoring (Cloud, 1 AI call per run)
+
+**Status: rewritten and confirmed working with a real call against live postings**
+(2026-08-22) — not just designed. `src/score/index.mjs`'s `--batch` path now builds
+one prompt for every pending offer and makes exactly one `claude -p` call, instead of
+the original one-call-per-job loop. Verified end-to-end: fetched 3 real live postings,
+correctly filtered out 2 dead ones (HTTP 404 / redirected) via the deterministic
+liveness check before spending anything on them, sent the 1 survivor in a single
+prompt, got back a correctly-parsed, well-reasoned score. Real cost for that first
+call: **$0.11** (a pure cache-write, no prior cache to read from yet).
 
 **Trigger:** strict single daily cron run (e.g. 7:00 AM), not on-demand. Prevents
 accidentally exhausting the ~5 routine-run/day cap on Pro during testing or iteration.
 
-**Input text must be extracted, not raw HTML.** Job postings on real career pages often
-carry thousands of words of navigation, cookie banners, and site boilerplate around the
-actual description. Phase 1's scan step should extract just the core text — title,
-requirements, description — before anything reaches a prompt. This keeps every batch
-compact regardless of how bloated the source page is.
+**Input text is extracted, not raw HTML — confirmed, not just assumed.** Read the real
+`src/score/jd-truncate.mjs` directly: it's genuine smart extraction, not a blunt
+cutoff — splits the posting into sections, explicitly keeps
+Responsibilities/Requirements/Qualifications, explicitly drops About-us/Benefits/EEO
+boilerplate, and only falls back to a raw prefix-slice if no sections match at all.
+Bonus: already bilingual-aware (matches French section headers too, a leftover from
+the original repo's use case). No changes needed here.
 
-**What needs to be built:** the repo's existing `src/score/index.mjs` has a `--batch`
-flag, but it *parallelizes* many separate `claude -p` calls (one per job) rather than
-combining them into a single prompt. Matching this design requires rewriting that batching
-logic to build one combined prompt for all pending offers instead.
-
-**Prompt caching not a priority here.** Since this is already one call for the whole
-batch, `cv.md` is only sent once regardless — there's no repeated prefix across separate
-calls to cache. (Caching matters more in Phase 4 — see Section 6.)
+**Score scale is 0-10, not 1-100** (see Decision #14 — this doc previously had it
+wrong). `reason` is 2-3 short bullets, stored as one string joined with `" | "`.
 
 **Prompt shape (one call, whole batch):**
 ```
-System: [cv.md] + scoring instructions (1-100, Python/SQL/Scikit-Learn/Pandas fit)
-        + "Only include essay_answer for entries scoring >= 85, else null"
-User:   [job 1 text], [job 2 text], ... [job N text], each tagged with its URL
+System: [cv.md] + English, US Associate-Data-Scientist scoring criteria (rewritten
+        from the original repo's French/internship-focused prompt — see Decision #15)
+User:   [offer 1 + url], [offer 2 + url], ... [offer N + url]
 ```
 
 **Response:**
 ```json
 [
-  { "url": "...", "score": 91, "why_fit": ["...","...","..."], "essay_answer": "..." },
-  { "url": "...", "score": 62, "why_fit": ["...","...","..."], "essay_answer": null }
+  { "url": "...", "score": 8.5, "reason": ["Strong Python/SQL match", "Genuinely entry-level"] },
+  { "url": "...", "score": 2.5, "reason": ["Part-time contractor, not full-time DS work"] }
 ]
 ```
+Matched back to offers by URL (with a loose trailing-slash-tolerant fallback), not by
+response order, so one dropped or reordered entry can't silently corrupt another
+offer's result.
 
-**Output:** `data/evaluations.jsonl`, one line per job.
+**No essay drafting here — see Decision #11.** This call does scoring only. Essay
+drafting happens exclusively in Phase 4, only for the job you actually apply to.
+
+**Prompt caching not used here** (see Decision #9 — deliberately skipped everywhere in
+this pipeline, not just Phase 2).
+
+**Output:** `data/evaluations.jsonl`, one line per offer.
 
 ---
 
-## 5. Phase 3 — Digest Email (Cloud, Zapier MCP, $0 AI)
+## 5. Phase 3 — Digest Email (Cloud, Zapier Webhook, $0 AI)
 
-Filter `evaluations.jsonl` for `score >= 85`, send via the Zapier MCP Gmail connector
-(confirmed authorized). Email includes company, title, score, why-fit bullets, essay
-snippet, and an `/apply <url>` command block per qualifying job.
+**Status: script built (`src/digest/index.mjs`) and confirmed working via `--dry-run`**
+(2026-08-22) — correctly reads `evaluations.jsonl`, computes the threshold, and either
+formats a real digest or cleanly reports "nothing qualifies" without erroring. Not yet
+sent for real — no qualifying score (≥7) has occurred yet in testing, and the actual
+Zapier webhook URL hasn't been created (see Open Items).
+
+**Mechanism: a plain webhook POST, not Zapier MCP (see Decision #13).** MCP tools can
+only be invoked by Claude in a conversation turn — deterministic code can't call one
+directly. Since this whole phase is $0 AI, routing it through MCP would mean spinning
+up a Claude turn just to send a fully-already-written email. Instead: one Zap is
+pre-built in Zapier ("Webhook trigger → Send Gmail"), and the script does a plain
+`fetch()` POST with the digest content as JSON.
+
+**Filter:** `evaluations.jsonl` entries where `score >= 7` (0-10 scale — see Decision
+#14), scored **today** specifically, so a daily run doesn't re-send yesterday's jobs.
+Threshold is configurable via `--min-score`, `config/candidate-profile.yml`'s
+`digest_min_score`, or falls back to the same `auto_apply_min_score` Phase 2 uses.
+
+**Email includes:** company, title, score, why-fit bullets (split back out from the
+stored `reason` string), and an `/apply <url>` command block per qualifying job. No
+essay preview — essays are only ever drafted in Phase 4, for the specific job you
+choose to apply to (see Decision #11).
+
+**`--dry-run` prints the full payload and rendered markdown, sends nothing** — this is
+the safe way to test formatting without a webhook configured yet, and was used for
+today's confirmation test.
 
 ---
 
@@ -208,13 +281,13 @@ Only fields `classifyField()` returns as `free_text` (a `<textarea>` matching no
 pattern) need an actual generated answer. If a form has one or more such fields, one
 prompt is sent: the question(s) + `cv.md`, grounded, 80-150 words, "never invent
 experience." Many applications — those with only standard fields — will need **zero**
-AI calls in this step.
+AI calls in this step. **This is the only place in the whole pipeline an essay answer
+ever gets written** (see Decision #11) — nothing is pre-drafted in Phase 2.
 
-**Prompt caching applies here.** Unlike Phase 2, Phase 4 makes a separate call per
-application, and every one of those calls repeats the same `cv.md` + instructions prefix.
-Structuring this prompt with that fixed content first, unchanged across every
-application, lets caching cut the repeated input-token cost across a day's worth of
-applications — this is where caching actually earns its keep in this pipeline.
+**No prompt caching here** — investigated and deliberately skipped (see Decision #9).
+`claude -p` doesn't expose manual cache-breakpoint control; getting real caching would
+require bypassing it for a direct, separately-billed API call, which isn't worth it at
+current volume (~3 applications/day).
 
 **Step D — Resume upload ($0 AI, code confirmed to exist):**
 `upload-file.mjs` connects via Playwright's `connectOverCDP` and sets the file directly
@@ -252,6 +325,8 @@ exist.
 | `language-detect.mjs` | Detects French vs. English from job posting text; **defaults to French when ambiguous** | No |
 | `cover-letter.mjs` / `letter-generator.mjs` | Optional cover-letter generation — calls `claude -p` (same subscription billing as Phase 2) | **Yes, if used** |
 | `apply-log.mjs` | Simple JSON-line logging of each apply attempt | No |
+| `score/prompt-builder.mjs` | `buildPrompt()` / `buildBatchPrompt()` — rewritten today for English/US criteria; confirmed 0-10 scale, `{score, reason}` shape | Builds the prompt for Phase 2's call |
+| `score/jd-truncate.mjs` | `truncateJd()` — confirmed genuine smart section-based extraction (keeps Requirements/Qualifications, drops About-us/Benefits), not a blunt cutoff | No |
 
 ---
 
@@ -259,9 +334,9 @@ exist.
 
 - [ ] **Top-level Phase 4 orchestration script doesn't exist yet.** All the pieces in
       Section 7 are real, but nothing currently calls them in sequence outside of the
-      agent-driven `apply.md`. This is the main thing to build.
-- [ ] **Phase 2 batching code doesn't exist yet.** Needs a rewrite of `src/score/index.mjs`
-      to build one combined prompt instead of parallel per-job calls.
+      agent-driven `apply.md`. This is the main thing to build next. Our POC
+      (`poc-fill.mjs`) proves the approach but runs on mock data in a separate `poc/`
+      folder — still needs promoting into `src/apply/index.mjs` against real config.
 - [ ] **Workday step-detection conflict.** `step-detect.mjs` contains real, Workday-shaped
       step signatures, but the README explicitly says "`/apply` support not yet
       implemented" for Workday. Don't assume Workday applications work until this is
@@ -274,18 +349,29 @@ exist.
       needs confirming before assuming it's required.
 - [ ] **`config/cv.md`, `config/candidate-profile.yml`, `config/portals.yml` are still
       templates.** Real data needed before either phase produces meaningful output.
+      (`cv.md` currently holds the repo's own French-student example, used today only as
+      throwaway test data for Phase 2 — never assumed real.)
 - [ ] **`config/` and `data/` are `.gitignore`'d by default** — `cv.md` needs to be
       explicitly committed to the private fork for the cloud Routine to see it.
-- [ ] **Verify `jdMaxTokens: 1500` in `src/score/index.mjs` does smart extraction, not
-      a blunt cutoff.** If it just truncates raw scraped text at a token count, it could
-      cut off mid-requirements or waste budget on boilerplate before the real content —
-      needs reading the actual truncation logic, not assumed from the flag name.
-- [ ] **Phase 4's prompt-caching structure isn't implemented yet** — needs the free-text
-      call built with `cv.md`/instructions as a stable prefix from the start, not
-      retrofitted later.
 - [ ] Confirm Claude Code Routines' daily run cap (previously found to be ~5/day on Pro,
       shared with all Claude Code/chat usage) comfortably fits a single daily 7:00 AM
       trigger plus normal interactive development usage.
+- [ ] **The real Zapier webhook doesn't exist yet.** Need to actually build the Zap
+      ("Webhook trigger → Send Gmail") in Zapier and get its URL before Phase 3 can send
+      anything for real — `--dry-run` is the only mode tested so far.
+- [ ] **Phase 2 has only been tested with 1 surviving live offer, not a real multi-offer
+      batch.** Two of the three test postings used were already dead (404 / redirected)
+      by the time of testing — that's a data problem, not a code problem, but the batch
+      path's "multiple offers in one prompt, matched back correctly by URL" behavior
+      hasn't been proven yet with N > 1. Worth a follow-up run with fresh live postings.
+- [ ] **Real per-call cost is now measured, not estimated: $0.11 for one offer, cache
+      miss** (first call ever, nothing to read from cache). Still need a second same-day
+      run to see the `cache_read` number and get a real repeat-call cost, not just the
+      first-call cost.
+- [ ] **No cloud Routine has been created for this project yet** (see Decision #12) —
+      needs to actually be set up at claude.ai/code/routines, pointed at the private
+      fork, before Phase 1-3 can run unattended at all. Nothing has run on a schedule
+      yet; Phase 1 has only been dry-run manually.
 
 ---
 
