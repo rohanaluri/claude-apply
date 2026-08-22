@@ -119,13 +119,31 @@ const RULES = [
     when: (f) =>
       test_norm(/company|employer|entreprise|organisation|organization/, f.label, f.name),
   },
+  // FIX 2 (2026-08-20 POC): tightened from /job title|position|poste|role|intitule/.
+  // The old pattern matched the bare word "position", so labels like "How did you hear
+  // about us or this position?" were misclassified as a job-title field. Now requires
+  // real job-title phrasing (a "title" word paired with job/position/poste, or an
+  // explicit French "intitule (du poste)" / "titre du poste").
   {
     key: 'experience_title',
-    when: (f) => test_norm(/job title|position|poste|role|intitule/, f.label, f.name),
+    when: (f) =>
+      test_norm(
+        /job title|position title|role title|title of position|intitule du poste|titre du poste|current position title/,
+        f.label,
+        f.name
+      ),
+  },
+  // FIX 1 (2026-08-20 POC): moved 'availability' ahead of 'experience_start'. Both
+  // regexes match "start date", and RULES is first-match-wins — with the old order,
+  // a top-level "earliest start date" question was misclassified as a past job's
+  // start date instead of the candidate's own availability date.
+  {
+    key: 'availability',
+    when: (f) => test_norm(/availability|start date|date de debut|disponibilite/, f.label, f.name),
   },
   {
     key: 'experience_start',
-    when: (f) => test_norm(/start date|date de debut|start.*(work|job)/, f.label, f.name),
+    when: (f) => test_norm(/start.*(work|job)/, f.label, f.name),
   },
   {
     key: 'experience_end',
@@ -146,14 +164,22 @@ const RULES = [
       ),
   },
   { key: 'sponsorship', when: (f) => test_norm(/sponsor|visa/, f.label, f.name) },
-  {
-    key: 'availability',
-    when: (f) => test_norm(/availability|start date|date de debut|disponibilite/, f.label, f.name),
-  },
   { key: 'eeo_gender', when: (f) => test_norm(/gender/, f.label, f.name) },
   { key: 'eeo_ethnicity', when: (f) => test_norm(/ethnicity|race/, f.label, f.name) },
   { key: 'eeo_veteran', when: (f) => test_norm(/veteran/, f.label, f.name) },
   { key: 'eeo_disability', when: (f) => test_norm(/disability|handicap/, f.label, f.name) },
+  // FIX 3 (2026-08-20 POC): short open-ended TEXT inputs (not just <textarea>) were
+  // silently falling through to 'unknown' and getting skipped rather than routed to
+  // the AI free-text step. This catches text inputs whose label reads like a genuine
+  // question (contains '?' or is a longer phrase), while still leaving short factual
+  // labels ("City", "Postal Code") to fall through to 'unknown' as before.
+  {
+    key: 'free_text',
+    when: (f) =>
+      f.type === 'text' &&
+      f.label &&
+      (/\?/.test(f.label) || f.label.trim().split(/\s+/).length >= 5),
+  },
   { key: 'free_text', when: (f) => f.type === 'textarea' },
 ];
 
