@@ -84,6 +84,17 @@ Notification: Zapier Webhook → Gmail
     French text appearing in Phase 1's dry-run output. Rewrote `SYSTEM`/`CRITERIA` in
     `prompt-builder.mjs` in English for the actual target profile; dropped the
     internship-specific "6 month duration" red flag rule.
+16. **Phase 4 promoted from POC to a real code-driven script (2026-08-22).**
+    `src/apply/index.mjs` now exists as a plain Playwright/CDP program implementing
+    Steps A-E from Section 6 directly — no AI agent reads the page (see Decision #1).
+    `.claude/commands/apply.md` was rewritten from a ~440-line agent playbook into a
+    thin wrapper: it checks the profile exists, runs `node src/apply/index.mjs
+    $ARGUMENTS` as a single Bash call, and relays the output verbatim — Claude does not
+    re-interpret or narrate what the script already reported. Confirmed via the real
+    `/apply` slash command, not just direct `node` invocation. Three real bugs were
+    found and fixed by testing against a live posting (PointClickCare, Lever) rather
+    than mock data alone — see Section 6 and Open Items for what's still unverified
+    (location-autocomplete fill, EEO/skill-rating coverage, cover letter wiring).
 
 ---
 
@@ -259,6 +270,26 @@ today's confirmation test.
 
 ## 6. Phase 4 — Local Apply (WSL2/Ubuntu, 0-1 AI calls, TRIPWIRE)
 
+**Status: promoted from POC to a real script and confirmed working against a live
+posting** (2026-08-22) — `src/apply/index.mjs`, invoked via the real `/apply` slash
+command (not just direct `node` calls). Verified live, twice, against a real Lever
+posting (PointClickCare, Associate Data Scientist): scanned 34 real fields, correctly
+filled standard fields from `config/candidate-profile.yml`, made exactly **one** batched
+AI call for 3 genuine free-text questions (confirmed via real usage data in the run
+output — not per-field calls), correctly detected the submit button and refused to click
+it, injected the review banner, and left the tab open. Testing against a real posting
+(rather than mock data alone) surfaced and fixed three real bugs that unit tests alone
+hadn't caught:
+- Company/Role were parsed backwards from the page title — fixed.
+- Work-authorization and sponsorship questions were misclassified as a job-history
+  field, because both questions happened to contain the word "Company" and a broader,
+  earlier classifier rule matched first — fixed by reordering.
+- The location field's on-page helper text was getting swept into its label, making it
+  look like a long essay question and routing it to the AI free-text pool instead of the
+  profile's city/country — detection is now fixed (routes to a dedicated `location`
+  action), but **actually selecting a real dropdown suggestion is not yet confirmed
+  working** — see Open Items.
+
 **Precondition:** `chrome-apply` running (confirmed working — real Chrome window,
 authenticated, isolated profile, port 9222).
 
@@ -298,12 +329,14 @@ tested, real CDP mechanics, not a placeholder.
 Halts unconditionally at the final review screen. Never calls Submit. You review, solve
 any CAPTCHA, and click Submit yourself.
 
-**What still needs to be built:** none of the individual pieces above are missing — they
-all exist as real, working modules in the repo. What's missing is the **top-level script**
-that calls them in this order. The repo's current entry point for `/apply` is
-`.claude/commands/apply.md`, an AI-agent playbook that reads the page live instead of
-calling these modules directly — that's the piece to replace with a plain orchestration
-script.
+**What's still not covered, by design choice made today (not oversight):** per your own
+instruction, accuracy/coverage polish was explicitly deprioritized in favor of proving
+the pipeline mechanism end-to-end. Known gaps, all correctly routed to manual review
+rather than silently guessed wrong: skill-rating questions ("rate your SQL
+proficiency"), "what US state do you reside in", and any EEO/Yes-No option whose exact
+wording doesn't match the classifier's known phrasing. Cover-letter generation
+(`renderLatex`) exists in the repo but isn't wired into `index.mjs` yet — those fields
+also route to manual review for now. See Open Items for the full list.
 
 ---
 
@@ -327,16 +360,42 @@ exist.
 | `apply-log.mjs` | Simple JSON-line logging of each apply attempt | No |
 | `score/prompt-builder.mjs` | `buildPrompt()` / `buildBatchPrompt()` — rewritten today for English/US criteria; confirmed 0-10 scale, `{score, reason}` shape | Builds the prompt for Phase 2's call |
 | `score/jd-truncate.mjs` | `truncateJd()` — confirmed genuine smart section-based extraction (keeps Requirements/Qualifications, drops About-us/Benefits), not a blunt cutoff | No |
+| `apply/index.mjs` | **New 2026-08-22.** Top-level Phase 4 orchestrator — Playwright/CDP, calls `field-classifier`, `dom-label`, `react-select-helper`, `upload-file`, `apply-log` directly. Confirmed working live (twice) against a real Lever posting. Does NOT yet call `cover-letter.mjs`/`renderLatex` — see Open Items | 1 batched call per page, only for genuine free-text questions |
+| `.claude/commands/apply.md` | **Rewritten 2026-08-22.** Thin wrapper: checks profile exists, runs `index.mjs` as one Bash call, relays output verbatim. Replaces the former ~440-line agent playbook | No (Claude just invokes and relays) |
 
 ---
 
 ## 8. Open Items
 
-- [ ] **Top-level Phase 4 orchestration script doesn't exist yet.** All the pieces in
-      Section 7 are real, but nothing currently calls them in sequence outside of the
-      agent-driven `apply.md`. This is the main thing to build next. Our POC
-      (`poc-fill.mjs`) proves the approach but runs on mock data in a separate `poc/`
-      folder — still needs promoting into `src/apply/index.mjs` against real config.
+- [x] ~~Top-level Phase 4 orchestration script doesn't exist yet.~~ **Resolved
+      2026-08-22:** `src/apply/index.mjs` built, promoted from the POC, confirmed
+      working live via the real `/apply` command against a real Lever posting.
+- [ ] **Location-autocomplete fill is not yet confirmed working.** Detection is fixed
+      (routes to a dedicated `location` action instead of the AI free-text pool), but
+      the actual fill — typing + selecting a real dropdown suggestion — has been tested
+      live twice and hasn't produced a confirmed value either time. Need to inspect the
+      real widget's HTML (input + suggestion item) on an actual Lever posting to build
+      an accurate selector instead of the current generic guess.
+- [ ] **Several field types have no classifier mapping or profile field yet** —
+      correctly routed to manual review, not silently guessed, but worth expanding if
+      apply volume increases: skill-rating questions ("rate your SQL proficiency"),
+      "what US state do you reside in" (profile only has city/country/postal_code).
+- [ ] **EEO and Yes/No option-matching is intentionally conservative.**
+      `chooseOption()` in `index.mjs` refuses to guess when a dropdown's exact wording
+      doesn't match known phrasing (e.g. non-standard "prefer not to say" variants) —
+      correct per design, but means many required EEO/boolean fields will need manual
+      selection until the known-phrasing list is expanded from real-world examples.
+- [ ] **Cover-letter generation isn't wired into `index.mjs` yet.** `cover-letter.mjs`'s
+      `renderLatex()` exists and is real, but calling it from Phase 4 hasn't been done —
+      `cover_letter_upload`/`cover_letter_text` fields currently route to manual review.
+- [ ] **Fixes made after the initial classifier merge (company/role parsing, work_auth/
+      sponsorship reordering, location detection) — confirm these have been committed
+      and pushed to the fork**, not just tested locally, before considering Phase 4
+      promotion fully closed out.
+- [ ] **Only tested on one ATS (Lever), one company.** Everything platform-specific in
+      today's fixes (the location field's structure, in particular) is Lever-shaped and
+      unverified elsewhere — Greenhouse, Ashby, and Workday each implement custom
+      widgets differently and will likely need their own handling, not a shared guess.
 - [ ] **Workday step-detection conflict.** `step-detect.mjs` contains real, Workday-shaped
       step signatures, but the README explicitly says "`/apply` support not yet
       implemented" for Workday. Don't assume Workday applications work until this is

@@ -114,6 +114,21 @@ const RULES = [
     when: (f) =>
       test_norm(/graduation year|promo|year of graduation|annee diplome/, f.label, f.name),
   },
+  // FIX 4 (2026-08-22, live test on PointClickCare Lever posting): work_auth and
+  // sponsorship must be checked BEFORE experience_company. Real forms phrase
+  // authorization/sponsorship questions as "...for our Company?", which the broad
+  // experience_company regex (/company|employer|.../ ) matched first, silently
+  // misclassifying two required work-authorization questions as job-history fields.
+  {
+    key: 'work_auth',
+    when: (f) =>
+      test_norm(
+        /work auth|authorized to work|right to work|eligible.*work|autorisation.*travail/,
+        f.label,
+        f.name
+      ),
+  },
+  { key: 'sponsorship', when: (f) => test_norm(/sponsor|visa/, f.label, f.name) },
   {
     key: 'experience_company',
     when: (f) =>
@@ -154,16 +169,6 @@ const RULES = [
     when: (f) =>
       test_norm(/description|summary.*(role|job|experience)|taches|missions/, f.label, f.name),
   },
-  {
-    key: 'work_auth',
-    when: (f) =>
-      test_norm(
-        /work auth|authorized to work|right to work|eligible.*work|autorisation.*travail/,
-        f.label,
-        f.name
-      ),
-  },
-  { key: 'sponsorship', when: (f) => test_norm(/sponsor|visa/, f.label, f.name) },
   { key: 'eeo_gender', when: (f) => test_norm(/gender/, f.label, f.name) },
   { key: 'eeo_ethnicity', when: (f) => test_norm(/ethnicity|race/, f.label, f.name) },
   { key: 'eeo_veteran', when: (f) => test_norm(/veteran/, f.label, f.name) },
