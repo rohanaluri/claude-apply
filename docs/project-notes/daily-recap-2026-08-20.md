@@ -13,6 +13,7 @@ References the architecture doc: `docs/project-notes/job-pipeline-architecture.m
 ## What We Accomplished
 
 ### 1. Environment setup (Sections 1 of the architecture doc)
+
 - Forked `LeoLaborie/claude-apply` to `rohanaluri/claude-apply` (private).
 - Discovered the repo's `scripts/setup.sh` has no Windows support at all — Linux/macOS
   only. Decided to run the whole local stack inside **WSL2/Ubuntu** rather than patch
@@ -32,11 +33,13 @@ References the architecture doc: `docs/project-notes/job-pipeline-architecture.m
   hit and fixed a PATH issue (`~/.local/bin` wasn't on PATH after install).
 
 ### 2. Ran Phase 1 (discovery scan) — confirmed working
+
 - `node src/scan/index.mjs --dry-run` executed successfully against placeholder companies
   in `portals.yml` — hit real Lever API endpoints, correctly found zero results (bad
   placeholder slugs, not a bug), correctly wrote no files.
 
 ### 3. Major correction: Phase 4 was never a free deterministic script
+
 - Asked Claude Code (running inside the Ubuntu repo) to patch the auto-submit tripwire.
   It reported the patch was **already done** — traced this to a separate earlier session
   on the Windows-side Claude Code install, before today's WSL work. Verified this was real
@@ -52,6 +55,7 @@ References the architecture doc: `docs/project-notes/job-pipeline-architecture.m
   what a genuinely code-driven version looks like.
 
 ### 4. Verified actual Claude/Anthropic billing mechanics (don't trust assumptions)
+
 - Confirmed via Anthropic's own Help Center that a planned June 15, 2026 billing split
   (moving `claude -p`/Agent SDK usage to a separate credit pool) was **announced, then
   paused** — currently, `claude -p` still draws from the same shared Pro subscription pool
@@ -65,6 +69,7 @@ References the architecture doc: `docs/project-notes/job-pipeline-architecture.m
   right now.
 
 ### 5. Redesigned Phase 4 around real, verified code
+
 - Pulled and read every file in `src/apply/` directly (user pasted actual file contents,
   not paraphrased) to avoid repeating the assumption mistake:
   `field-classifier.mjs`, `dom-label.mjs`/`dom-label.browser.js`, `react-select-helper.mjs`,
@@ -82,7 +87,9 @@ References the architecture doc: `docs/project-notes/job-pipeline-architecture.m
   Phase 2 is already one batched call), and lock Phases 1-3 to a strict single daily cron.
 
 ### 6. Built and iterated a working POC
+
 Built (`poc/` folder, standalone, references the repo's real modules):
+
 - `mock-profile.yml` / `mock-cv.md` — fake identity, matching `field-classifier.mjs`'s
   expected keys.
 - `test-form.html` — a local mock application form.
@@ -95,6 +102,7 @@ the profile; the one essay question got a genuinely grounded, non-generic Claude
 using only mock-CV facts. Zero submit risk since no submit code exists.
 
 **Test 2 — real live posting (Epoch AI, Lever):** found real, useful bugs, not failures:
+
 - My `.fill()`-only approach broke on `<select>` and `<input type="radio">` (need
   `selectOption`/`check`, not `fill`).
 - Essay answers came back blank with no error — a silent key-mismatch bug in my own script.
@@ -104,6 +112,7 @@ using only mock-CV facts. Zero submit risk since no submit code exists.
   the bare word "position").
 
 **Fixes applied and verified:**
+
 - Classifier: reordered `availability` ahead of `experience_start`; tightened
   `experience_title`'s regex so it requires real job-title phrasing; added a fallback so
   short open-ended text inputs (not just `<textarea>`) route to the AI instead of being
@@ -135,6 +144,7 @@ standard fill/check/click and need React-aware event handling (the repo's
 ## What's Verified vs. Still Assumed
 
 **Verified today, by direct testing or direct file reads:**
+
 - WSL2/Ubuntu environment works end-to-end for this repo.
 - Phase 1 scan logic works against real APIs.
 - The tripwire patch is real and correct.
@@ -145,6 +155,7 @@ standard fill/check/click and need React-aware event handling (the repo's
   once options are harvested first.
 
 **Still assumed / not yet tested:**
+
 - Whether the same approach holds up on Greenhouse or Ashby forms (only tested on Lever).
 - React-controlled custom widgets (location autocomplete, at least one Lever radio) are
   not yet handled — real gap, not a hidden one.
@@ -195,6 +206,7 @@ tasks before further exploratory testing. In order:
    manually and Phase 4 tested manually.
 
 **After the above (lower priority, previously noted):**
+
 - Diagnose the one remaining failing radio button (`poc_field_14` on the Epoch AI form)
   by comparing its real HTML against the working radio's HTML — don't guess "React" again,
   actually look.

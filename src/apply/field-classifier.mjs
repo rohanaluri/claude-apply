@@ -139,26 +139,35 @@ const RULES = [
   // about us or this position?" were misclassified as a job-title field. Now requires
   // real job-title phrasing (a "title" word paired with job/position/poste, or an
   // explicit French "intitule (du poste)" / "titre du poste").
+  // FIX 5 (2026-08-22, caught by the repo's own existing test suite): Fix 2 also
+  // dropped bare standalone "Poste"/"Intitulé" — French forms commonly use just that
+  // one word as the field label, with none of the English ambiguity ("position" alone
+  // is the risky one, not "poste" alone). Restored as explicit word-boundary matches.
   {
     key: 'experience_title',
     when: (f) =>
       test_norm(
-        /job title|position title|role title|title of position|intitule du poste|titre du poste|current position title/,
+        /job title|position title|role title|title of position|intitule du poste|titre du poste|current position title|\bposte\b|\bintitule\b/,
         f.label,
         f.name
       ),
   },
   // FIX 1 (2026-08-20 POC): moved 'availability' ahead of 'experience_start'. Both
-  // regexes match "start date", and RULES is first-match-wins — with the old order,
-  // a top-level "earliest start date" question was misclassified as a past job's
-  // start date instead of the candidate's own availability date.
+  // regexes originally matched bare "start date", and RULES is first-match-wins — with
+  // the old order, a top-level "earliest start date" question was misclassified as a
+  // past job's start date instead of the candidate's own availability date.
+  // FIX 6 (2026-08-22, caught by the repo's own existing test suite): narrowed
+  // availability's match from bare "start date" (too broad — broke the existing test
+  // expecting generic "Start Date" to mean a job's start date) to specifically
+  // "earliest start", matching the actual real-world label that caused Fix 1. Restored
+  // "start date"/"date de debut" to experience_start, where they originally belonged.
   {
     key: 'availability',
-    when: (f) => test_norm(/availability|start date|date de debut|disponibilite/, f.label, f.name),
+    when: (f) => test_norm(/availability|earliest start|disponibilite/, f.label, f.name),
   },
   {
     key: 'experience_start',
-    when: (f) => test_norm(/start.*(work|job)/, f.label, f.name),
+    when: (f) => test_norm(/start date|date de debut|start.*(work|job)/, f.label, f.name),
   },
   {
     key: 'experience_end',

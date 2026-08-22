@@ -62,23 +62,38 @@ function askClaude(payload, cvMarkdown, profile) {
     'directly and briefly. If a question explicitly forbids AI assistance, return the ' +
     'empty string "" for that id.\n' +
     '- For "choices": return the EXACT string of the single best-matching option from ' +
-    'that field\'s options list, using the profile value as intent. Never invent an ' +
+    "that field's options list, using the profile value as intent. Never invent an " +
     'option not in the list. If nothing fits, return "".\n' +
     '- Respond with ONLY one JSON object: { "<id>": "<answer or chosen option>", ... }. ' +
     'No prose, no markdown.\n\n' +
-    'PROFILE:\n' + JSON.stringify(profile, null, 2) + '\n\nCV:\n' + cvMarkdown;
+    'PROFILE:\n' +
+    JSON.stringify(profile, null, 2) +
+    '\n\nCV:\n' +
+    cvMarkdown;
 
   const user = JSON.stringify(payload);
 
   return new Promise((resolve, reject) => {
     const proc = spawn(
       'claude',
-      ['-p', '--system-prompt', system, '--disable-slash-commands', '--no-chrome',
-       '--strict-mcp-config', '--mcp-config', emptyMcpPath, '--setting-sources', '',
-       '--output-format', 'json'],
+      [
+        '-p',
+        '--system-prompt',
+        system,
+        '--disable-slash-commands',
+        '--no-chrome',
+        '--strict-mcp-config',
+        '--mcp-config',
+        emptyMcpPath,
+        '--setting-sources',
+        '',
+        '--output-format',
+        'json',
+      ],
       { cwd: os.tmpdir(), stdio: ['pipe', 'pipe', 'pipe'] }
     );
-    let stdout = '', stderr = '';
+    let stdout = '',
+      stderr = '';
     proc.stdout.on('data', (c) => (stdout += c));
     proc.stderr.on('data', (c) => (stderr += c));
     proc.on('close', (code) => {
@@ -154,8 +169,12 @@ async function main() {
             return { value: r.value, label: lbl || r.value, id: r.id };
           });
           out.push({
-            id: el.id, name: el.name || '', type: 'radio_group',
-            label: getLabel(el) || '', groupName: group, options,
+            id: el.id,
+            name: el.name || '',
+            type: 'radio_group',
+            label: getLabel(el) || '',
+            groupName: group,
+            options,
           });
         }
       } else {
@@ -172,7 +191,11 @@ async function main() {
   const freeText = [];
   const choices = [];
   for (const f of fields) {
-    const cls = classifyField({ label: f.label, name: f.name, type: f.type === 'radio_group' ? 'radio' : f.type });
+    const cls = classifyField({
+      label: f.label,
+      name: f.name,
+      type: f.type === 'radio_group' ? 'radio' : f.type,
+    });
 
     if (f.type === 'select' || f.type === 'radio_group') {
       // deterministic value as intent, but Claude picks the real option
@@ -197,7 +220,9 @@ async function main() {
   let ai = {};
   const needAI = freeText.length + choices.length;
   if (needAI > 0) {
-    console.log(`[poc] one Claude call: ${freeText.length} free-text + ${choices.length} choice fields ...`);
+    console.log(
+      `[poc] one Claude call: ${freeText.length} free-text + ${choices.length} choice fields ...`
+    );
     ai = await askClaude({ free_text: freeText, choices }, cvMarkdown, profile);
     console.log('[poc] answer keys returned:', Object.keys(ai).join(', ') || '(none)');
   } else {
@@ -212,17 +237,30 @@ async function main() {
     try {
       if (p.kind === 'select') {
         const choice = ai[p.id];
-        if (!choice) { review.push(`${p.id} (dropdown) — no match; pick manually: "${p.label.slice(0,50)}"`); continue; }
-        await page.locator(sel).first().selectOption({ label: choice }, { timeout: 4000 })
+        if (!choice) {
+          review.push(`${p.id} (dropdown) — no match; pick manually: "${p.label.slice(0, 50)}"`);
+          continue;
+        }
+        await page
+          .locator(sel)
+          .first()
+          .selectOption({ label: choice }, { timeout: 4000 })
           .catch(() => page.locator(sel).first().selectOption(choice, { timeout: 4000 }));
         console.log(`   ✓ ${p.id} (dropdown) = "${choice}"`);
       } else if (p.kind === 'radio_group') {
         const choice = ai[p.id];
-        if (!choice) { review.push(`${p.id} (radio) — no match; pick manually: "${p.label.slice(0,50)}"`); continue; }
+        if (!choice) {
+          review.push(`${p.id} (radio) — no match; pick manually: "${p.label.slice(0, 50)}"`);
+          continue;
+        }
         // find the radio whose label matches the chosen text
-        const target = p.options.find((o) => o.label.trim() === choice.trim())
-          || p.options.find((o) => o.label.toLowerCase().includes(choice.toLowerCase()));
-        if (!target) { review.push(`${p.id} (radio) — Claude chose "${choice}" but no option matched`); continue; }
+        const target =
+          p.options.find((o) => o.label.trim() === choice.trim()) ||
+          p.options.find((o) => o.label.toLowerCase().includes(choice.toLowerCase()));
+        if (!target) {
+          review.push(`${p.id} (radio) — Claude chose "${choice}" but no option matched`);
+          continue;
+        }
 
         // Lever (and many ATS) hide the real <input> behind a styled proxy, so
         // .check() on the input times out. Try, in order:
@@ -250,15 +288,23 @@ async function main() {
         else review.push(`${p.id} (radio) — could not click "${target.label}"; pick manually`);
       } else if (p.kind === 'free_text') {
         const ans = ai[p.id];
-        if (!ans) { review.push(`${p.id} (free-text) — left blank (no CV source / AI declined): "${p.label.slice(0,50)}"`); continue; }
+        if (!ans) {
+          review.push(
+            `${p.id} (free-text) — left blank (no CV source / AI declined): "${p.label.slice(0, 50)}"`
+          );
+          continue;
+        }
         await page.locator(sel).first().fill(String(ans), { timeout: 4000 });
-        console.log(`   ✓ ${p.id} (free-text) = "${String(ans).slice(0,50)}"`);
+        console.log(`   ✓ ${p.id} (free-text) = "${String(ans).slice(0, 50)}"`);
       } else if (p.type === 'file') {
         review.push(`${p.id} (file upload) — attach resume manually`);
       } else {
-        if (!p.value) { review.push(`${p.id} (${p.cls}) — no profile value: "${p.label.slice(0,50)}"`); continue; }
+        if (!p.value) {
+          review.push(`${p.id} (${p.cls}) — no profile value: "${p.label.slice(0, 50)}"`);
+          continue;
+        }
         await page.locator(sel).first().fill(String(p.value), { timeout: 4000 });
-        console.log(`   ✓ ${p.id} (text) = "${String(p.value).slice(0,50)}"`);
+        console.log(`   ✓ ${p.id} (text) = "${String(p.value).slice(0, 50)}"`);
       }
     } catch (err) {
       review.push(`${p.id} (${p.kind}) — fill failed: ${err.message.split('\n')[0]}`);

@@ -140,8 +140,7 @@ async function main() {
     }
   }
 
-  const minScore =
-    flags.minScore ?? profile.digest_min_score ?? profile.auto_apply_min_score ?? 7;
+  const minScore = flags.minScore ?? profile.digest_min_score ?? profile.auto_apply_min_score ?? 7;
 
   const today = new Date().toISOString().slice(0, 10);
   const evalPath = path.join(DATA_DIR, 'evaluations.jsonl');
@@ -205,11 +204,15 @@ async function main() {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.error(`[digest] Webhook POST failed: ${res.status} ${res.statusText}\n${text.slice(0, 300)}`);
+    console.error(
+      `[digest] Webhook POST failed: ${res.status} ${res.statusText}\n${text.slice(0, 300)}`
+    );
     process.exit(3);
   }
 
-  console.error(`[digest] Sent ${jobs.length} job${jobs.length === 1 ? '' : 's'} to the webhook (${res.status}).`);
+  console.error(
+    `[digest] Sent ${jobs.length} job${jobs.length === 1 ? '' : 's'} to the webhook (${res.status}).`
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

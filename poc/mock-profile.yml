@@ -1,51 +1,51 @@
 # MOCK identity for POC testing only. No real data.
 # Field names match what src/apply/field-classifier.mjs -> mapProfileValue() expects.
-first_name: "Jordan"
-last_name: "Testman"
-email: "jordan.testman@example.com"
-phone: "+1 555 010 2020"
-linkedin_url: "https://www.linkedin.com/in/jordan-testman-mock"
-github_url: "https://github.com/jordan-testman-mock"
-website_url: "https://jordantestman.example.com"
+first_name: 'Jordan'
+last_name: 'Testman'
+email: 'jordan.testman@example.com'
+phone: '+1 555 010 2020'
+linkedin_url: 'https://www.linkedin.com/in/jordan-testman-mock'
+github_url: 'https://github.com/jordan-testman-mock'
+website_url: 'https://jordantestman.example.com'
 
 # location + logistics
-location: "Atlanta, Georgia, USA"
-country: "United States"
-desired_hours_per_week: "20"
-timezone: "UTC-5 (Eastern Time)"
+location: 'Atlanta, Georgia, USA'
+country: 'United States'
+desired_hours_per_week: '20'
+timezone: 'UTC-5 (Eastern Time)'
 
-school: "State University of Testing"
-degree: "B.S. Data Science"
-graduation_year: "2024"
+school: 'State University of Testing'
+degree: 'B.S. Data Science'
+graduation_year: '2024'
 
 # work authorization (used for both text fields and yes/no radios)
-work_authorization: "Authorized to work in the US"
-authorized_to_work: "Yes"
+work_authorization: 'Authorized to work in the US'
+authorized_to_work: 'Yes'
 requires_sponsorship: false
-availability_start: "Immediately"
+availability_start: 'Immediately'
 
 # EEO — used for both <select> dropdowns and radio groups
-gender: "Decline to self-identify"
-ethnicity: "Decline to self-identify"
-veteran_status: "I am not a veteran"
-disability_status: "Decline to self-identify"
+gender: 'Decline to self-identify'
+ethnicity: 'Decline to self-identify'
+veteran_status: 'I am not a veteran'
+disability_status: 'Decline to self-identify'
 
 # misc preference answers (free-text the classifier can't source from a CV)
 how_heard: "Found the posting on the company's public careers page."
-share_info_consent: "No"
+share_info_consent: 'No'
 
-cv_path: "./mock-resume.pdf"
+cv_path: './mock-resume.pdf'
 
 education:
-  - school: "State University of Testing"
-    degree: "B.S. Data Science"
-    field: "Data Science"
-    start: "2020"
-    end: "2024"
+  - school: 'State University of Testing'
+    degree: 'B.S. Data Science'
+    field: 'Data Science'
+    start: '2020'
+    end: '2024'
 
 experiences:
-  - company: "DataCorp (Mock)"
-    title: "Data Science Intern"
-    start: "2023-06"
-    end: "2023-08"
-    description: "Built a churn-prediction model in Python (scikit-learn), cleaned and analyzed customer data with pandas and SQL, and presented findings to the analytics team."
+  - company: 'DataCorp (Mock)'
+    title: 'Data Science Intern'
+    start: '2023-06'
+    end: '2023-08'
+    description: 'Built a churn-prediction model in Python (scikit-learn), cleaned and analyzed customer data with pandas and SQL, and presented findings to the analytics team.'

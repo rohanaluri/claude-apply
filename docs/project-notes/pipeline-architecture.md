@@ -62,7 +62,7 @@ Notification: Zapier Webhook → Gmail
     question text.
 12. **No cloud Routine exists yet for this project.** The only Routine currently
     configured on this account is an unrelated morning news briefing — useful only as a
-    reference for *how* to structure a Routine, not something this pipeline builds on
+    reference for _how_ to structure a Routine, not something this pipeline builds on
     top of. Creating the real Routine for Phases 1-3 is still fully unbuilt (see Open
     Items).
 13. **Phase 3 sends via a plain Zapier webhook, not Zapier MCP.** Confirmed: MCP tools
@@ -89,7 +89,7 @@ Notification: Zapier Webhook → Gmail
     Steps A-E from Section 6 directly — no AI agent reads the page (see Decision #1).
     `.claude/commands/apply.md` was rewritten from a ~440-line agent playbook into a
     thin wrapper: it checks the profile exists, runs `node src/apply/index.mjs
-    $ARGUMENTS` as a single Bash call, and relays the output verbatim — Claude does not
+$ARGUMENTS` as a single Bash call, and relays the output verbatim — Claude does not
     re-interpret or narrate what the script already reported. Confirmed via the real
     `/apply` slash command, not just direct `node` invocation. Three real bugs were
     found and fixed by testing against a live posting (PointClickCare, Lever) rather
@@ -111,9 +111,11 @@ via `apt` — fully separate from Windows Chrome.
 
 **Chrome CDP profile:** dedicated, isolated, launched via a `chrome-apply` alias in
 `~/.bashrc`:
+
 ```bash
 alias chrome-apply='"/usr/bin/google-chrome" --user-data-dir="/home/rohan/.config/google-chrome-claude-apply" --remote-debugging-port=9222 &'
 ```
+
 Signed into the job-search Gmail account. `claude-in-chrome` extension installed in this
 profile per the repo's setup instructions (its exact role alongside the redesigned,
 code-driven Phase 4 below is still unconfirmed — see Open Items).
@@ -130,6 +132,7 @@ current compatibility gap: Playwright does not yet officially support Ubuntu 26.
 (confirmed via Microsoft's own issue tracker — other users hitting the identical error
 at the same time). Fixed with the documented workaround, telling Playwright to use its
 Ubuntu 24.04 build instead:
+
 ```bash
 export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64   # add to ~/.bashrc — needed at runtime, not just install
 npx playwright install chromium
@@ -169,7 +172,7 @@ flowchart TD
     class H5 tripwire
 ```
 
-*Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdown Preview Mermaid Support" extension if it doesn't render in the preview tab shown above.*
+_Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdown Preview Mermaid Support" extension if it doesn't render in the preview tab shown above._
 
 ---
 
@@ -210,6 +213,7 @@ the original repo's use case). No changes needed here.
 wrong). `reason` is 2-3 short bullets, stored as one string joined with `" | "`.
 
 **Prompt shape (one call, whole batch):**
+
 ```
 System: [cv.md] + English, US Associate-Data-Scientist scoring criteria (rewritten
         from the original repo's French/internship-focused prompt — see Decision #15)
@@ -217,12 +221,14 @@ User:   [offer 1 + url], [offer 2 + url], ... [offer N + url]
 ```
 
 **Response:**
+
 ```json
 [
   { "url": "...", "score": 8.5, "reason": ["Strong Python/SQL match", "Genuinely entry-level"] },
   { "url": "...", "score": 2.5, "reason": ["Part-time contractor, not full-time DS work"] }
 ]
 ```
+
 Matched back to offers by URL (with a loose trailing-slash-tolerant fallback), not by
 response order, so one dropped or reordered entry can't silently corrupt another
 offer's result.
@@ -280,6 +286,7 @@ output — not per-field calls), correctly detected the submit button and refuse
 it, injected the review banner, and left the tab open. Testing against a real posting
 (rather than mock data alone) surfaced and fixed three real bugs that unit tests alone
 hadn't caught:
+
 - Company/Role were parsed backwards from the page title — fixed.
 - Work-authorization and sponsorship questions were misclassified as a job-history
   field, because both questions happened to contain the word "Company" and a broader,
@@ -346,22 +353,22 @@ Every file below was opened and read directly — not assumed from the README �
 repeating an earlier mistake where a described-but-unverified script turned out not to
 exist.
 
-| File | Confirmed contents | AI involved? |
-|---|---|---|
-| `field-classifier.mjs` | `classifyField()` — regex-matches ~30 field types; `mapProfileValue()` — maps to profile data | No |
-| `dom-label.mjs` / `dom-label.browser.js` | `extractLabel()` — finds a field's human label across multiple ATS-specific patterns; `clickInQuestion()` — clicks a radio/checkbox by matched question+choice text | No |
-| `react-select-helper.mjs` | `REACT_SELECT_SNIPPET` — opens and selects from React-Select-style custom dropdowns | No |
-| `upload-file.mjs` | `uploadFile()` — genuine Playwright `connectOverCDP` file upload | No |
-| `step-detect.mjs` | `detectStep()` — detects which page of a multi-step flow you're on via URL/DOM markers shaped like Workday's flow | No (but see Open Items — conflicts with README) |
-| `confirmation-detector.mjs` | Old success/fail page detection — confirmed dead code, not called since the auto-submit tripwire patch | No |
-| `accounts.mjs` | Generates/stores per-ATS email aliases + random passwords for platforms requiring account creation | No |
-| `language-detect.mjs` | Detects French vs. English from job posting text; **defaults to French when ambiguous** | No |
-| `cover-letter.mjs` / `letter-generator.mjs` | Optional cover-letter generation — calls `claude -p` (same subscription billing as Phase 2) | **Yes, if used** |
-| `apply-log.mjs` | Simple JSON-line logging of each apply attempt | No |
-| `score/prompt-builder.mjs` | `buildPrompt()` / `buildBatchPrompt()` — rewritten today for English/US criteria; confirmed 0-10 scale, `{score, reason}` shape | Builds the prompt for Phase 2's call |
-| `score/jd-truncate.mjs` | `truncateJd()` — confirmed genuine smart section-based extraction (keeps Requirements/Qualifications, drops About-us/Benefits), not a blunt cutoff | No |
-| `apply/index.mjs` | **New 2026-08-22.** Top-level Phase 4 orchestrator — Playwright/CDP, calls `field-classifier`, `dom-label`, `react-select-helper`, `upload-file`, `apply-log` directly. Confirmed working live (twice) against a real Lever posting. Does NOT yet call `cover-letter.mjs`/`renderLatex` — see Open Items | 1 batched call per page, only for genuine free-text questions |
-| `.claude/commands/apply.md` | **Rewritten 2026-08-22.** Thin wrapper: checks profile exists, runs `index.mjs` as one Bash call, relays output verbatim. Replaces the former ~440-line agent playbook | No (Claude just invokes and relays) |
+| File                                        | Confirmed contents                                                                                                                                                                                                                                                                                       | AI involved?                                                  |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `field-classifier.mjs`                      | `classifyField()` — regex-matches ~30 field types; `mapProfileValue()` — maps to profile data                                                                                                                                                                                                            | No                                                            |
+| `dom-label.mjs` / `dom-label.browser.js`    | `extractLabel()` — finds a field's human label across multiple ATS-specific patterns; `clickInQuestion()` — clicks a radio/checkbox by matched question+choice text                                                                                                                                      | No                                                            |
+| `react-select-helper.mjs`                   | `REACT_SELECT_SNIPPET` — opens and selects from React-Select-style custom dropdowns                                                                                                                                                                                                                      | No                                                            |
+| `upload-file.mjs`                           | `uploadFile()` — genuine Playwright `connectOverCDP` file upload                                                                                                                                                                                                                                         | No                                                            |
+| `step-detect.mjs`                           | `detectStep()` — detects which page of a multi-step flow you're on via URL/DOM markers shaped like Workday's flow                                                                                                                                                                                        | No (but see Open Items — conflicts with README)               |
+| `confirmation-detector.mjs`                 | Old success/fail page detection — confirmed dead code, not called since the auto-submit tripwire patch                                                                                                                                                                                                   | No                                                            |
+| `accounts.mjs`                              | Generates/stores per-ATS email aliases + random passwords for platforms requiring account creation                                                                                                                                                                                                       | No                                                            |
+| `language-detect.mjs`                       | Detects French vs. English from job posting text; **defaults to French when ambiguous**                                                                                                                                                                                                                  | No                                                            |
+| `cover-letter.mjs` / `letter-generator.mjs` | Optional cover-letter generation — calls `claude -p` (same subscription billing as Phase 2)                                                                                                                                                                                                              | **Yes, if used**                                              |
+| `apply-log.mjs`                             | Simple JSON-line logging of each apply attempt                                                                                                                                                                                                                                                           | No                                                            |
+| `score/prompt-builder.mjs`                  | `buildPrompt()` / `buildBatchPrompt()` — rewritten today for English/US criteria; confirmed 0-10 scale, `{score, reason}` shape                                                                                                                                                                          | Builds the prompt for Phase 2's call                          |
+| `score/jd-truncate.mjs`                     | `truncateJd()` — confirmed genuine smart section-based extraction (keeps Requirements/Qualifications, drops About-us/Benefits), not a blunt cutoff                                                                                                                                                       | No                                                            |
+| `apply/index.mjs`                           | **New 2026-08-22.** Top-level Phase 4 orchestrator — Playwright/CDP, calls `field-classifier`, `dom-label`, `react-select-helper`, `upload-file`, `apply-log` directly. Confirmed working live (twice) against a real Lever posting. Does NOT yet call `cover-letter.mjs`/`renderLatex` — see Open Items | 1 batched call per page, only for genuine free-text questions |
+| `.claude/commands/apply.md`                 | **Rewritten 2026-08-22.** Thin wrapper: checks profile exists, runs `index.mjs` as one Bash call, relays output verbatim. Replaces the former ~440-line agent playbook                                                                                                                                   | No (Claude just invokes and relays)                           |
 
 ---
 
@@ -434,7 +441,7 @@ exist.
 
 ---
 
-*Every code claim in this document was verified by opening the actual file — either
+_Every code claim in this document was verified by opening the actual file — either
 directly, or pasted from the user's local clone when direct access wasn't possible.
 If anything here turns out to be wrong, verify by reading the real file again before
-changing the design — don't reason from the README or from what a related file implies.*
+changing the design — don't reason from the README or from what a related file implies._

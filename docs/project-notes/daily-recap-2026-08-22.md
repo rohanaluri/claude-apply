@@ -1,9 +1,11 @@
 # Daily Recap — 2026-08-22
 
-**One-line summary:** Resolved the two open architectural decisions from last session
-(Zapier mechanism, Phase 2 score schema), rewrote Phase 2 for true single-call batching,
-built Phase 3's digest script from scratch, and ran the first-ever real (non-mock) test
-of the pipeline — spending real money, getting a real score, on a real live job posting.
+**One-line summary:** Morning session resolved Phase 2/3's open decisions, rewrote Phase 2
+for true single-call batching, built Phase 3's digest script, and ran the first real
+(non-mock) pipeline test. Afternoon session promoted Phase 4 from POC to a real
+code-driven script (`src/apply/index.mjs`), rewrote `/apply` as a thin wrapper around it,
+and — critically — tested both live against a real posting instead of mock data only,
+which surfaced and fixed three real bugs unit tests alone hadn't caught.
 
 References the architecture doc: `docs/project-notes/pipeline-architecture.md`
 (all section/decision numbers below refer to that document, now updated to match today).
@@ -97,6 +99,82 @@ documenting today's resolutions. Refreshed Open Items to remove what's now resol
 add what today's testing actually surfaced (webhook not yet created, batch untested with
 N>1 live offers, only one real cost data point so far).
 
+### 7. Phase 4 promoted: POC → real `src/apply/index.mjs`
+Unblocked by finally receiving `config/candidate-profile.yml`'s real key structure
+(the repo's own Alice Martin template — flat identity/address fields, nested
+`education[]`/`experiences[]` arrays, `languages[]` as `{code, level}` objects). Also
+received the real `field-classifier.mjs`, `apply.md`, `dom-label.mjs`, `upload-file.mjs`,
+`language-detect.mjs`, `apply-log.mjs`, `candidate-profile.schema.mjs`, `cover-letter.mjs`,
+`react-select-helper.mjs`, `confirmation-detector.mjs` — all read directly, not assumed.
+
+Built `src/apply/index.mjs`: a plain Playwright/CDP script implementing Section 6's
+Steps A-E deterministically, replacing the AI-agent playbook. Key design choices:
+- Multi-step "Next" forms auto-advance (your explicit choice), guarded by a
+  `classifyButton()` function that checks submit-patterns *before* next-patterns, so any
+  ambiguous button ("Submit and Continue") always resolves to submit and is never
+  clicked. Capped at 6 steps; aborts if a page doesn't actually change after a click.
+- Fields that can't be confidently resolved (no matching dropdown option, unrecognized
+  label) fill what they can and flag the rest for review — your explicit choice — rather
+  than halting the whole run.
+- Cover-letter generation was deliberately left unwired: `cover-letter.mjs`'s
+  `generateCoverLetter()` makes its own separate `claude -p` call, which combined with
+  the batched free-text call would be **two** AI calls per application — a direct
+  violation of Decision #4. Left as manual-review for now; wiring `renderLatex()`
+  directly (skipping the redundant AI call) is a follow-up, not done today.
+
+Wrote 50 unit tests (`test-apply.mjs`) covering the pure logic — button classification,
+option matching, AI response parsing, field grouping/routing. One real bug caught by the
+tests themselves: `chooseOption()` was silently picking the first of two ambiguous
+dropdown matches ("Master of Science" vs "Master of Arts" for input "Master") — fixed to
+require unambiguous matches, falling back to manual review instead of guessing.
+
+### 8. Live-tested against a real posting — found 3 more real bugs
+Ran the actual script (dry-run, then a real fill) against a live PointClickCare
+Associate Data Scientist posting on Lever — not mock data. This surfaced bugs the unit
+tests couldn't have caught, since they depend on real-world label phrasing:
+
+1. **Company/Role parsed backwards** from the page title-splitting logic — fixed and
+   verified against three real title patterns (PointClickCare, Bumble, Epoch AI).
+2. **Work-authorization and sponsorship questions misclassified** as `experience_company`
+   — both questions are phrased "...for our Company?", and a broader, earlier classifier
+   rule matched the word "Company" before the correct rule got a chance. Fixed by
+   reordering `work_auth`/`sponsorship` ahead of `experience_company` in
+   `field-classifier.mjs` (documented in-file as "Fix 4").
+3. **Location field misrouted to the AI free-text pool** — its on-page helper text ("No
+   location found...") was getting swept into the label by the DOM label-reader, making
+   it look like a long essay question. Fixed detection (routes to a dedicated `location`
+   action using `profile.city`/`profile.country`, bypassing the classifier entirely for
+   this case). **Fill itself — typing + selecting a real dropdown suggestion — is
+   attempted via real keystrokes (not JS value-setting, which Places-style widgets
+   reject) but has NOT been confirmed working in either live test.** This remains open;
+   need the real widget's HTML to build an accurate selector instead of a generic guess.
+
+Confirmed live and working, unchanged by any bug: the tripwire (correctly detected
+"Submit application" and refused to click it), the single-batched-AI-call design (1 real
+call answered 3 free-text questions, confirmed via actual usage data in the run output,
+not per-field calls), and graceful handling of a missing local CV file (flagged for
+review instead of crashing the run).
+
+### 9. Rewrote `.claude/commands/apply.md` as a thin wrapper
+Replaced the ~440-line AI-agent playbook with a short command file: checks the profile
+exists, runs `node src/apply/index.mjs $ARGUMENTS` as a single Bash call, relays the
+output verbatim. Explicitly instructed not to re-summarize or re-interpret what the
+script already reported — the whole point of Decision #1 is that Claude shouldn't spend
+tokens re-deciding something a deterministic script already determined.
+
+**Tested via the real `/apply` slash command** (not just direct `node` calls) — confirmed
+it runs as a single fast Bash call and shows the same output already verified via direct
+invocation, with no agent-style page-reading behavior.
+
+### 10. Updated the architecture doc again
+Added Decision #16 (today's Phase 4 promotion). Rewrote Section 6 from "what still needs
+building" to "confirmed working live, here's what's still open." Added `index.mjs` and
+the rewritten `apply.md` to the Section 7 inventory. Open Items: marked the top-level
+orchestration item resolved; added six new items reflecting exactly what today's live
+testing surfaced (location-autocomplete unverified, unmapped field types, conservative
+EEO/Yes-No matching, unwired cover-letter generation, need-to-confirm-committed, and
+single-ATS-only testing).
+
 ---
 
 ## What's Verified vs. Still Assumed
@@ -109,6 +187,16 @@ N>1 live offers, only one real cost data point so far).
 - Phase 3's digest formatting logic works correctly against real (and against empty)
   evaluation data.
 - Real per-call cost for Phase 2: $0.11 for one offer, first-call/cache-miss pricing.
+- Phase 4's core mechanic (scan → classify → fill → 1 batched AI call → tripwire) works
+  live against a real posting, via the real `/apply` slash command, not just direct
+  `node` calls or mock data.
+- The tripwire is real and held under live testing — correctly detected and refused to
+  click "Submit application" both times.
+- The single-AI-call design is real — confirmed via actual usage data in the run output
+  (not inferred), one call answered all 3 free-text questions on the form.
+- `chooseOption()`'s refuse-to-guess behavior is real — caught its own bug in testing
+  (ambiguous "Master" match) and correctly flags unmatched EEO/Yes-No fields rather than
+  guessing wrong, exactly as designed.
 
 **Still assumed / not yet tested:**
 - Phase 2's batching with more than 1 offer surviving in the same call — today's test
@@ -119,8 +207,12 @@ N>1 live offers, only one real cost data point so far).
   has cleared the ≥7 threshold in testing so far.
 - Cache-read pricing/savings — need a same-day repeat call to see a real number instead
   of the pure cache-write cost from today.
-- Phase 4 promotion (POC → real `src/apply/index.mjs`) — not touched today, still
-  exactly where last session left it.
+- **Location-autocomplete fill — attempted, not confirmed.** Detection is fixed, but
+  actually selecting a real suggestion from the dropdown has failed both live attempts.
+  Needs the real widget's HTML to fix properly, not another guess.
+- Everything Lever-specific in today's fixes is unverified on Greenhouse, Ashby, or
+  Workday — deliberately deferred, per today's explicit "accuracy later" decision.
+- Cover letter generation is not wired into Phase 4 at all yet.
 
 ---
 
@@ -138,20 +230,44 @@ N>1 live offers, only one real cost data point so far).
 - `data/pipeline.md` — test data, 3 real live postings, for today's batch test.
 - `data/evaluations.jsonl` — now has its first real entry (Epoch AI, score 2.5).
 - Environment: `~/.bashrc` gained `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64`.
+- `src/apply/index.mjs` — **new file.** Phase 4's real orchestrator, replacing the POC.
+- `src/apply/field-classifier.mjs` — merged the 3 POC fixes (start-date ordering,
+  job-title regex, short-text free_text fallback), then a 4th fix from live testing
+  (work_auth/sponsorship reordered ahead of experience_company).
+- `.claude/commands/apply.md` — rewritten from a ~440-line agent playbook to a thin
+  wrapper around `index.mjs`.
+- `test-apply.mjs` — new file, 50 unit tests for `index.mjs`'s pure logic.
+- `poc/field-classifier.patched.mjs` — deleted, superseded by the merged fix in `src/apply`.
+- `docs/project-notes/pipeline-architecture.md` — Decision #16 added, Section 6 rewritten
+  from future-tense to confirmed-working, inventory and Open Items updated again.
 
 ---
 
 ## Where We Left Off / Next Steps
 
-1. **Find 2-3 fresh live postings and re-run `--batch`** to actually prove multi-offer
-   batching (today's test degraded to N=1 because 2 of 3 test postings had gone dead).
-2. **Create the real Zapier webhook** ("Webhook trigger → Send Gmail" Zap) so Phase 3
+**Immediately pending as of end-of-session:** confirm all of today's Phase 4 files
+(`index.mjs`, the reordered `field-classifier.mjs`, the rewritten `apply.md`,
+`test-apply.mjs`) are actually committed and pushed to the fork — verify this before
+treating anything below as built on solid ground.
+
+1. **Fix the location-autocomplete fill for real**, using the actual widget's HTML
+   instead of a generic guess — needed before Phase 4 can reliably handle any ATS's
+   location field, not just detect it.
+2. **Find 2-3 fresh live postings and re-run `--batch`** to actually prove multi-offer
+   Phase 2 batching (still unproven since the 08-22 morning session — 2 of 3 test
+   postings had gone dead that day).
+3. **Create the real Zapier webhook** ("Webhook trigger → Send Gmail" Zap) so Phase 3
    can be tested for real, not just `--dry-run`.
-3. **Phase 4 promotion is still next in line after that**, per last session's priority:
-   turn `poc-fill.mjs` into real `src/apply/index.mjs`, merge the three classifier
-   fixes into the real `field-classifier.mjs`, rewrite `.claude/commands/apply.md`. Not
-   started today — need `config/candidate-profile.yml`'s real key structure first
-   (asked for, not yet received) before writing this safely.
-4. Cloud Routine creation still fully unbuilt, unchanged from last session.
-5. Still using mock/template data throughout (Alice Martin's CV, fabricated candidate
+4. **Create the actual cloud Routine** for Phases 1-3 — still fully unbuilt, nothing has
+   ever run unattended.
+5. Lower priority, explicitly deferred today: wiring cover-letter generation into Phase
+   4, expanding EEO/Yes-No option-matching coverage, testing on a second ATS beyond
+   Lever, the Workday step-detection question.
+6. Still using mock/template data throughout (Alice Martin's CV, fabricated candidate
    profile) — real personal data intentionally still not entered anywhere.
+
+**The honest gate on "full POC done" is unchanged from this morning's framing:** once
+items 2-4 above are done, the whole loop — scan, score, email, apply — runs end-to-end
+unattended on mock data. Phase 4's *mechanism* is now proven live; what's left before the
+loop is complete is Phases 2's multi-offer proof and Phases 3/Routine's delivery
+plumbing, not more Phase 4 work.

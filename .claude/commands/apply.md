@@ -102,9 +102,9 @@ workaround.
 
 ---
 
-*Historical note: this file previously contained a ~440-line AI-agent playbook that read
+_Historical note: this file previously contained a ~440-line AI-agent playbook that read
 the live page turn-by-turn via `claude-in-chrome` MCP tools, making its own decisions at
 each step. That approach is retired as of 2026-08-22 — `src/apply/index.mjs` now performs
 the same work deterministically via Playwright/CDP, at a fraction of the token cost per
 application. See the architecture doc's Decisions #1 and #16, and Section 6, for the
-full reasoning and what was verified in promoting it.*
+full reasoning and what was verified in promoting it._

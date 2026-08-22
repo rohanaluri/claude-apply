@@ -66,7 +66,13 @@ const SUBMIT_PATTERNS = [
 ];
 
 /** Safe forward-navigation buttons on multi-step forms. */
-const NEXT_PATTERNS = [/\bnext\b/i, /\bcontinue\b/i, /save and continue/i, /\bsuivant\b/i, /\bcontinuer\b/i];
+const NEXT_PATTERNS = [
+  /\bnext\b/i,
+  /\bcontinue\b/i,
+  /save and continue/i,
+  /\bsuivant\b/i,
+  /\bcontinuer\b/i,
+];
 
 const CLOSED_PATTERNS = [
   /no longer accepting applications/i,
@@ -155,7 +161,10 @@ export function chooseOption(options, desired, classKey = '') {
 /** Build the single batched prompt for all AI-answered questions. */
 export function buildAiPrompt({ company, role, language, jdText, cvMd, questions }) {
   const list = questions
-    .map((q, i) => `${i + 1}. [id=${q.id}] ${q.question}${q.maxLength ? ` (max ${q.maxLength} chars)` : ''}`)
+    .map(
+      (q, i) =>
+        `${i + 1}. [id=${q.id}] ${q.question}${q.maxLength ? ` (max ${q.maxLength} chars)` : ''}`
+    )
     .join('\n');
 
   return [
@@ -263,7 +272,12 @@ export function planFields(fields, profile) {
     const classKey = classifyField({ ...f, label: labelForClass });
 
     if (UPLOAD_KEYS.has(classKey)) {
-      return { ...f, classKey, action: 'upload', value: mapProfileValue(classKey, profile) ?? profile.cv_path };
+      return {
+        ...f,
+        classKey,
+        action: 'upload',
+        value: mapProfileValue(classKey, profile) ?? profile.cv_path,
+      };
     }
     if (AI_KEYS.has(classKey)) {
       return { ...f, classKey, action: 'ai', question: labelForClass || f.placeholder || '' };
@@ -278,7 +292,12 @@ export function planFields(fields, profile) {
         : { ...f, classKey, action: 'review', reason: 'no confident option match', value };
     }
     if (classKey === 'unknown' || value === undefined || value === null || value === '') {
-      return { ...f, classKey, action: 'review', reason: classKey === 'unknown' ? 'unrecognized field' : 'no profile value' };
+      return {
+        ...f,
+        classKey,
+        action: 'review',
+        reason: classKey === 'unknown' ? 'unrecognized field' : 'no profile value',
+      };
     }
     return { ...f, classKey, action: 'fill', value };
   });
@@ -427,9 +446,13 @@ async function fillLocationAutocomplete(page, field, value) {
   await locator.pressSequentially(value, { delay: 60 });
   await page.waitForTimeout(900); // let the autocomplete API respond
 
-  const optionSel = '[role="option"], li[class*="suggest" i], li[class*="option" i], div[class*="suggest" i]';
+  const optionSel =
+    '[role="option"], li[class*="suggest" i], li[class*="option" i], div[class*="suggest" i]';
   const option = page.locator(optionSel).first();
-  const hasOption = await option.count().then((c) => c > 0).catch(() => false);
+  const hasOption = await option
+    .count()
+    .then((c) => c > 0)
+    .catch(() => false);
 
   if (hasOption) {
     await option.click({ timeout: 2000 }).catch(() => {});
@@ -480,9 +503,18 @@ async function injectBanner(page, summary) {
     const banner = document.createElement('div');
     banner.id = 'claude-apply-review-banner';
     banner.style.cssText = [
-      'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:999999',
-      'background:#f59e0b', 'color:#1a1a1a', 'font-size:15px', 'font-weight:bold',
-      'text-align:center', 'padding:14px 16px', 'font-family:system-ui,sans-serif',
+      'position:fixed',
+      'top:0',
+      'left:0',
+      'right:0',
+      'z-index:999999',
+      'background:#f59e0b',
+      'color:#1a1a1a',
+      'font-size:15px',
+      'font-weight:bold',
+      'text-align:center',
+      'padding:14px 16px',
+      'font-family:system-ui,sans-serif',
       'box-shadow:0 2px 8px rgba(0,0,0,0.25)',
     ].join(';');
     banner.textContent = msg;
@@ -568,7 +600,9 @@ async function main() {
   try {
     browser = await chromium.connectOverCDP(cdpUrl);
   } catch (e) {
-    console.error(`✖ Cannot reach Chrome DevTools at ${cdpUrl}. Launch the \`chrome-apply\` alias first.`);
+    console.error(
+      `✖ Cannot reach Chrome DevTools at ${cdpUrl}. Launch the \`chrome-apply\` alias first.`
+    );
     process.exit(1);
   }
 
@@ -600,7 +634,10 @@ async function main() {
     role = meta.h1.trim();
     // Lever's h1 often duplicates the full "<company> - <role>" title rather than
     // giving just the role, so fall back to splitting the title in that case.
-    const titleParts = meta.title.split(/[-|–]/).map((s) => s.trim()).filter(Boolean);
+    const titleParts = meta.title
+      .split(/[-|–]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (!role || role === meta.title.trim()) {
       role = titleParts.length > 1 ? titleParts.slice(1).join(' - ') : meta.title.trim();
     }
@@ -624,7 +661,9 @@ async function main() {
       if (args.dryRun) {
         console.log(`\n── step ${step} (dry-run, nothing filled) ──`);
         for (const p of plan) {
-          console.log(`  [${p.action.padEnd(6)}] ${p.classKey.padEnd(20)} ${(p.label || p.questionText || '').slice(0, 60)}`);
+          console.log(
+            `  [${p.action.padEnd(6)}] ${p.classKey.padEnd(20)} ${(p.label || p.questionText || '').slice(0, 60)}`
+          );
         }
       } else {
         // 1. deterministic fills
@@ -632,13 +671,22 @@ async function main() {
           try {
             if (p.action === 'fill') {
               const ok = await fillSimple(page, p, p.value);
-              if (!ok) { p.action = 'review'; p.reason = 'fill verification failed'; }
+              if (!ok) {
+                p.action = 'review';
+                p.reason = 'fill verification failed';
+              }
             } else if (p.action === 'radio') {
               const ok = await fillRadio(page, p, p.value);
-              if (!ok) { p.action = 'review'; p.reason = 'radio click not confirmed'; }
+              if (!ok) {
+                p.action = 'review';
+                p.reason = 'radio click not confirmed';
+              }
             } else if (p.action === 'location') {
               const ok = await fillLocationAutocomplete(page, p, p.value);
-              if (!ok) { p.action = 'review'; p.reason = 'location autocomplete: no value confirmed after typing + selecting'; }
+              if (!ok) {
+                p.action = 'review';
+                p.reason = 'location autocomplete: no value confirmed after typing + selecting';
+              }
             } else if (p.action === 'upload') {
               if (p.value && fs.existsSync(p.value)) {
                 await page.locator(`[data-ca-idx="${p.idx}"]`).setInputFiles(path.resolve(p.value));
@@ -658,17 +706,33 @@ async function main() {
         const aiFields = plan.filter((p) => p.action === 'ai' && p.question);
         if (aiFields.length) {
           if (aiCallsUsed >= args.maxAiCalls) {
-            aiFields.forEach((p) => { p.action = 'review'; p.reason = 'AI call budget exhausted'; });
+            aiFields.forEach((p) => {
+              p.action = 'review';
+              p.reason = 'AI call budget exhausted';
+            });
             log.push(`skipped ${aiFields.length} AI field(s): budget exhausted`);
           } else {
-            const questions = aiFields.map((p, i) => ({ id: `q${p.idx}`, question: p.question, maxLength: p.maxLength }));
-            const prompt = buildAiPrompt({ company, role, language, jdText: meta.body, cvMd, questions });
+            const questions = aiFields.map((p, i) => ({
+              id: `q${p.idx}`,
+              question: p.question,
+              maxLength: p.maxLength,
+            }));
+            const prompt = buildAiPrompt({
+              company,
+              role,
+              language,
+              jdText: meta.body,
+              cvMd,
+              questions,
+            });
             try {
               const { text, usage } = runClaudeBatch(prompt);
               aiCallsUsed++;
               const { answers, parseError } = parseAiResponse(text);
               if (parseError) errors.push('AI response was not valid JSON');
-              log.push(`AI call ${aiCallsUsed}: ${aiFields.length} question(s), usage=${JSON.stringify(usage)}`);
+              log.push(
+                `AI call ${aiCallsUsed}: ${aiFields.length} question(s), usage=${JSON.stringify(usage)}`
+              );
               for (const p of aiFields) {
                 const ans = answers[`q${p.idx}`];
                 if (ans && String(ans).trim()) {
@@ -681,7 +745,10 @@ async function main() {
                 }
               }
             } catch (e) {
-              aiFields.forEach((p) => { p.action = 'review'; p.reason = `AI call failed: ${e.message}`; });
+              aiFields.forEach((p) => {
+                p.action = 'review';
+                p.reason = `AI call failed: ${e.message}`;
+              });
               errors.push(`AI call failed: ${e.message}`);
             }
           }
@@ -694,7 +761,9 @@ async function main() {
       const nextBtn = navs.find((b) => classifyButton(b.text) === 'next' && !b.disabled);
 
       if (submitBtn && !nextBtn) {
-        log.push(`step ${step}: submit button found ("${submitBtn.text}") — stopping for human review`);
+        log.push(
+          `step ${step}: submit button found ("${submitBtn.text}") — stopping for human review`
+        );
         break;
       }
       if (!nextBtn) {
@@ -708,7 +777,9 @@ async function main() {
 
       const beforeUrl = page.url();
       const beforeCount = (await scanPage(page)).length;
-      await page.click(`[data-ca-nav="${nextBtn.idx}"]`).catch((e) => errors.push(`next click: ${e.message}`));
+      await page
+        .click(`[data-ca-nav="${nextBtn.idx}"]`)
+        .catch((e) => errors.push(`next click: ${e.message}`));
       await page.waitForTimeout(NAV_SETTLE_MS);
 
       const afterUrl = page.url();
@@ -721,7 +792,9 @@ async function main() {
     }
 
     // --- tripwire ---
-    const filled = allPlans.filter((p) => ['fill', 'radio', 'upload', 'filled-ai', 'location'].includes(p.action));
+    const filled = allPlans.filter((p) =>
+      ['fill', 'radio', 'upload', 'filled-ai', 'location'].includes(p.action)
+    );
     const review = allPlans.filter((p) => p.action === 'review');
     const requiredReview = review.filter((p) => p.required);
 
@@ -742,11 +815,15 @@ async function main() {
     console.log(`Role:       ${role ?? '—'}`);
     console.log(`Language:   ${language}`);
     console.log(`Filled:     ${filled.length}`);
-    console.log(`Review:     ${review.length}${requiredReview.length ? `  (${requiredReview.length} REQUIRED)` : ''}`);
+    console.log(
+      `Review:     ${review.length}${requiredReview.length ? `  (${requiredReview.length} REQUIRED)` : ''}`
+    );
     if (review.length) {
       console.log('\nNeeds human attention:');
       for (const p of review) {
-        console.log(`  • ${p.required ? '[REQUIRED] ' : ''}${(p.label || p.questionText || '(no label)').slice(0, 70)}`);
+        console.log(
+          `  • ${p.required ? '[REQUIRED] ' : ''}${(p.label || p.questionText || '(no label)').slice(0, 70)}`
+        );
         console.log(`      classKey=${p.classKey}  reason=${p.reason}`);
       }
     }
