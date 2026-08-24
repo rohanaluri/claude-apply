@@ -154,10 +154,21 @@ export async function appendDigestRow({ sheetsClient, sheetId, sheetName, row })
   });
 }
 
+// Two ways to authenticate, so the same script works both locally (WSL2,
+// via a key FILE) and in the cloud Routine (via the key CONTENT in an env
+// var — no file-writing setup script needed, nothing touches disk):
+//   1. $GOOGLE_SERVICE_ACCOUNT_JSON — raw JSON key content (cloud Routine)
+//   2. $GOOGLE_APPLICATION_CREDENTIALS — path to a key file (local WSL2,
+//      Google's own standard convention, picked up automatically)
 async function buildSheetsClient() {
-  const auth = new google.auth.GoogleAuth({
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
+  const scopes = ['https://www.googleapis.com/auth/spreadsheets'];
+  let auth;
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    auth = new google.auth.GoogleAuth({ credentials, scopes });
+  } else {
+    auth = new google.auth.GoogleAuth({ scopes });
+  }
   const authClient = await auth.getClient();
   return google.sheets({ version: 'v4', auth: authClient });
 }
