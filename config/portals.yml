@@ -1,0 +1,96 @@
+# Companies to scan for open positions.
+# Copy to config/portals.yml and customise.
+#
+# Group A (auto-detected ATS APIs): Lever, Greenhouse, Ashby URLs are scraped
+# directly by `node src/scan/index.mjs` — zero LLM cost.
+#
+# Group B (custom career pages): handled via an agentic scanner (not in v0.1).
+
+tracked_companies:
+  - name: Mistral AI
+    careers_url: https://jobs.lever.co/mistral
+    enabled: true
+    # Domain is implicit in company name — skip required_any filter
+    skip_required_any: true
+  - name: Anthropic
+    careers_url: https://jobs.lever.co/Anthropic
+    enabled: true
+    # Optional per-company override: accept roles located in London or Remote
+    # for this company only, regardless of the global target_locations.
+    # Omit the key entirely to fall back to the global list.
+    # target_locations:
+    #   - London
+    #   - Remote
+  - name: Photoroom
+    careers_url: https://jobs.lever.co/photoroom
+    enabled: true
+  - name: ElevenLabs
+    careers_url: https://jobs.lever.co/elevenlabs
+    enabled: true
+
+title_filter:
+  # positive and negative terms match WHOLE WORDS, case-insensitive.
+  # Examples:
+  #   - "stage"    matches "Stage Data", does NOT match "Backstage"
+  #   - "intern"   matches "Intern", does NOT match "International"
+  #     (add "interns", "internship" explicitly if you want those)
+  #
+  # Escape hatch — wrap a real regex in slashes for power cases:
+  #   - "/^stage\\b/i"        anchor to start of title
+  #   - "/ml\\s*engineer/i"   allow optional whitespace
+  #
+  # Titles must contain at least one of these.
+  positive:
+    - Intern
+    - Internship
+    - Stage
+    - Stagiaire
+
+  # Optional exclusion keywords — offers matching any of these are dropped.
+  negative: []
+
+  # Optional domain filter applied *on top of* positive/negative:
+  # if set, the job title must contain at least one of these keywords
+  # (same whole-word semantics and regex escape hatch as above).
+  # Leave empty or omit to skip. Use `skip_required_any: true` per company
+  # to bypass for portals whose titles do not include the domain keyword.
+  required_any: []
+
+  # When `required_any` is set, also match against the offer description
+  # if the title alone doesn't contain one of the keywords. Default: [title].
+  # Setting [title, description] catches titles like "Research Scientist Intern"
+  # whose body mentions "Machine Learning" or "AI" but whose title does not.
+  # Only required_any is soft-matched — positive and negative remain title-only.
+  # Note: Workday descriptions are not fetched in v1 (soft match disabled there).
+  required_any_in: [title]
+
+# Aggregator-based discovery (company-agnostic).
+#
+# Aggregators query a curated set of public ATS boards in a single shot, so
+# you don't have to add each company to `tracked_companies` above. Run:
+#   /scan --source aggregator     # only aggregators
+#   /scan --source all            # tracked_companies + aggregators
+#   /scan                         # default — only tracked_companies
+#
+# Each entry is optional. Omit the whole `aggregators:` block to disable.
+aggregators:
+  # Greenhouse public aggregator. Hits boards-api.greenhouse.io for a curated
+  # list of well-known boards. The default list ships with the project; you
+  # can override it via `boards: [{ slug, company }, …]`.
+  greenhouse:
+    enabled: true
+    # Optional pre-filter on title (whole word, case-insensitive). Most users
+    # leave this empty — title_filter above is applied AFTER the aggregator
+    # returns its raw list and is more powerful.
+    keywords: []
+    # Optional pre-filter on location (substring, case-insensitive). Useful
+    # to short-circuit foreign offers BEFORE they hit the global filter.
+    locations: []
+    # Optional cap on the total number of aggregator-derived offers returned
+    # in one scan. Default: no cap.
+    # limit: 200
+    # Optional override of the curated boards list. Keep the default for the
+    # broadest coverage; override only if you want to narrow the search.
+    # boards:
+    #   - { slug: anthropic, company: Anthropic }
+    #   - { slug: stripe, company: Stripe }

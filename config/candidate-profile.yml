@@ -1,0 +1,89 @@
+# Candidate profile — used by /scan, /score, and /apply.
+# Copy this file to config/candidate-profile.yml and fill in your details.
+# NEVER commit config/candidate-profile.yml (it is in .gitignore).
+
+# --- Identity ---
+first_name: Alice
+last_name: Martin
+email: alice.martin@example.com
+phone: '+33600000000'
+date_of_birth: '2003-05-15'
+nationality: French
+
+linkedin_url: https://www.linkedin.com/in/alice-martin-example/
+github_url: https://github.com/alice-martin-example
+website_url: https://alice-martin.example.com
+
+# --- Address ---
+city: Paris
+country: France
+postal_code: '75001'
+
+# --- Education ---
+school: Example University of Technology
+degree: MSc Computer Science
+graduation_year: 2028
+current_year: 2
+
+education:
+  - school: Example University of Technology
+    degree: MSc Computer Science
+    field: Machine Learning
+    start: '2023-09-01'
+    end: '2028-06-30'
+    description: Focus on ML systems, distributed computing, and applied research.
+
+# --- Experience ---
+experiences:
+  - company: Example ML Lab
+    title: Research Intern
+    start: '2025-06-01'
+    end: '2025-08-31'
+    description: |
+      Built a reproducible training pipeline for small language models,
+      improved eval throughput by 3x, shipped internal tool used by 10+ researchers.
+
+# --- Work authorization ---
+work_authorization: EU citizen — no sponsorship needed
+requires_sponsorship: false
+
+# --- Availability ---
+availability_start: '2026-09-01'
+internship_duration_months: 6
+
+# --- Languages ---
+languages:
+  - { code: fr, level: native }
+  - { code: en, level: C1 }
+  - { code: es, level: A2 }
+
+# --- CV path (repo-relative recommended; absolute or ~/... also accepted) ---
+cv_path: config/cv.pdf
+
+# --- Optional document paths (repo-relative, absolute, or ~/... all accepted) ---
+transcript_path: null # releve de notes / academic transcript
+portfolio_path: null # portfolio / work samples
+other_document_path: null # any additional document
+
+# --- Auto-apply threshold (0..10) ---
+auto_apply_min_score: 8
+
+# --- EEO (optional; leave null to answer "Prefer not to say") ---
+gender: null
+ethnicity: null
+veteran_status: null
+disability_status: null
+
+# --- Scoring hints (optional) ---
+# Used by /scan and /score to filter out unwanted companies / too-early start dates.
+blacklist_companies: []
+min_start_date: '2026-08-24'
+
+# --- Geographic targeting (optional) ---
+# Used by /scan to filter offers by location. Case-insensitive substring match.
+# When absent, derived from city + country above → ["France", "Paris", "Remote"].
+# target_locations:
+#   - France
+#   - Paris
+#   - Remote
+digest_sheet_id: '1G1SXo_Xac0meQueYGLfl04nYxcRrPHHJ6W5_-uqktQc'
