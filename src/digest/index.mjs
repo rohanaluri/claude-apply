@@ -2,39 +2,59 @@
 // PHASE 3 — Digest Email. Deterministic, $0 AI.
 //
 // Reads data/evaluations.jsonl, keeps entries at/above the score threshold,
-// formats a markdown digest, and POSTs it to a Zapier webhook (which is
-// configured in Zapier as: Webhook trigger -> Send Gmail).
+// formats a markdown digest, and appends ONE row per run to a Google Sheet
+// (which Zapier watches: "New Spreadsheet Row" trigger -> Send Gmail action).
 //
-// Why a webhook and not Zapier MCP: MCP tools can only be invoked by Claude
-// during a conversation turn. This step has no AI in it — the content is fully
-// determined by code — so routing it through an MCP call would mean spinning up
-// a Claude turn purely to send an already-written email. A plain HTTPS POST is
-// cheaper, simpler, and deterministic.
+// Why Google Sheets and not a Zapier webhook: "Webhooks by Zapier" is a
+// Premium app, gated behind Zapier's paid plans. Google Sheets is a standard
+// (non-premium) app, so Trigger: Google Sheets -> Action: Gmail fits inside
+// Zapier's Free plan's 2-step Zap limit, and Zapier's own docs/pricing page
+// confirm polling triggers never consume tasks — only the Gmail send does
+// (~1 task/day). This doesn't change Decision #13 (no Zapier MCP): the
+// reasoning there — deterministic code can't invoke an MCP tool outside a
+// Claude turn — still holds. This only changes *how the data reaches
+// Zapier*, not whether AI is involved (it still isn't, anywhere in Phase 3).
 //
 // Usage:
-//   node src/digest/index.mjs [--min-score 7] [--dry-run] [--webhook <url>]
+//   node src/digest/index.mjs [--min-score 7] [--dry-run] [--sheet-id <id>] [--sheet-name <name>]
 //
-// Webhook URL resolution order:
-//   1. --webhook <url>
-//   2. $ZAPIER_DIGEST_WEBHOOK_URL
-//   3. config/candidate-profile.yml -> digest_webhook_url
+// Sheet ID resolution order:
+//   1. --sheet-id <id>
+//   2. $GOOGLE_SHEETS_DIGEST_ID
+//   3. config/candidate-profile.yml -> digest_sheet_id
 //
-// --dry-run prints the payload and sends nothing. Use this for all testing.
+// Sheet tab name resolution order:
+//   1. --sheet-name <name>
+//   2. config/candidate-profile.yml -> digest_sheet_name
+//   3. 'Digest' (default)
+//
+// Google credentials: uses a service account (no interactive login, works
+// headless from a cloud Routine). Point $GOOGLE_APPLICATION_CREDENTIALS at
+// the service account's JSON key file (this is the Google-standard env var
+// name — the googleapis library picks it up automatically). The service
+// account's email (found inside that JSON key file) must be shared on the
+// target Sheet as an Editor, or the append call will fail with a permission
+// error.
+//
+// --dry-run prints the payload and the row that WOULD be appended; writes
+// nothing to the Sheet. Use this for all testing.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { google } from 'googleapis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
-  const flags = { minScore: null, dryRun: false, webhook: null };
+  const flags = { minScore: null, dryRun: false, sheetId: null, sheetName: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--min-score') flags.minScore = parseFloat(argv[++i]);
     else if (a === '--dry-run') flags.dryRun = true;
-    else if (a === '--webhook') flags.webhook = argv[++i];
+    else if (a === '--sheet-id') flags.sheetId = argv[++i];
+    else if (a === '--sheet-name') flags.sheetName = argv[++i];
     else if (a === '--help' || a === '-h') flags.help = true;
   }
   return flags;
@@ -43,17 +63,20 @@ function parseArgs(argv) {
 function printHelp() {
   console.log(`Usage: node src/digest/index.mjs [options]
 
-Builds a markdown digest of qualifying offers and sends it via a Zapier webhook.
+Builds a markdown digest of qualifying offers and appends one row to a Google
+Sheet. Zapier watches that Sheet (New Spreadsheet Row trigger) and sends the
+digest via Gmail.
 
 Flags:
-  --min-score <n>    Score threshold, 0-10 scale (default: profile's
-                     digest_min_score, else auto_apply_min_score, else 7)
-  --dry-run          Print the payload; send nothing. Use for testing.
-  --webhook <url>    Override the webhook URL for this run.
-  --help, -h         Show this help.
+  --min-score <n>     Score threshold, 0-10 scale (default: profile's
+                       digest_min_score, else auto_apply_min_score, else 7)
+  --dry-run           Print the payload/row; write nothing. Use for testing.
+  --sheet-id <id>     Override the target Google Sheet ID for this run.
+  --sheet-name <name> Override the target sheet/tab name for this run.
+  --help, -h          Show this help.
 
 Reads:  data/evaluations.jsonl, config/candidate-profile.yml
-Sends:  POST {subject, body_markdown, job_count, jobs[]} to the Zapier webhook`);
+Writes: one row [date, subject, job_count, body] to the configured Google Sheet`);
 }
 
 export function readEvaluations(evalPath) {
@@ -118,6 +141,27 @@ Apply:
   return header + '\n' + blocks.join('\n');
 }
 
+// Appends one row to the configured Google Sheet. `sheetsClient` is injected
+// so this stays unit-testable with a fake client (no real Google API needed).
+// Row shape: [date, subject, job_count, body] — matches columns A:D.
+export async function appendDigestRow({ sheetsClient, sheetId, sheetName, row }) {
+  await sheetsClient.spreadsheets.values.append({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!A:D`,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [row] },
+  });
+}
+
+async function buildSheetsClient() {
+  const auth = new google.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+  const authClient = await auth.getClient();
+  return google.sheets({ version: 'v4', auth: authClient });
+}
+
 async function main() {
   const flags = parseArgs(process.argv.slice(2));
   if (flags.help) {
@@ -129,7 +173,7 @@ async function main() {
     process.env.CLAUDE_APPLY_CONFIG_DIR || path.join(__dirname, '..', '..', 'config');
   const DATA_DIR = process.env.CLAUDE_APPLY_DATA_DIR || path.join(__dirname, '..', '..', 'data');
 
-  // Load profile for threshold + webhook fallback. Missing file is not fatal here.
+  // Load profile for threshold + sheet fallback. Missing file is not fatal here.
   let profile = {};
   const profilePath = path.join(CONFIG_DIR, 'candidate-profile.yml');
   if (fs.existsSync(profilePath)) {
@@ -162,56 +206,52 @@ async function main() {
   }
 
   const markdown = buildDigestMarkdown(jobs, today);
-  const payload = {
-    subject: `Job Digest — ${today} — ${jobs.length} match${jobs.length === 1 ? '' : 'es'}`,
-    body_markdown: markdown,
-    job_count: jobs.length,
-    jobs: jobs.map((j) => ({
-      company: j.company,
-      role: j.role,
-      score: j.score,
-      location: j.location ?? null,
-      url: j.url,
-      reason: j.reason,
-    })),
-  };
+  const subject = `Job Digest — ${today} — ${jobs.length} match${jobs.length === 1 ? '' : 'es'}`;
+  const row = [today, subject, jobs.length, markdown];
 
   if (flags.dryRun) {
-    console.error('[digest] --dry-run: nothing sent. Payload below.\n');
-    console.log(JSON.stringify(payload, null, 2));
+    console.error('[digest] --dry-run: nothing written. Row that would be appended:\n');
+    console.log(
+      JSON.stringify({ date: today, subject, job_count: jobs.length, body: markdown }, null, 2)
+    );
     console.error('\n[digest] --- rendered markdown ---\n');
     console.error(markdown);
     return;
   }
 
-  const webhookUrl =
-    flags.webhook || process.env.ZAPIER_DIGEST_WEBHOOK_URL || profile.digest_webhook_url;
+  const sheetId = flags.sheetId || process.env.GOOGLE_SHEETS_DIGEST_ID || profile.digest_sheet_id;
+  const sheetName = flags.sheetName || profile.digest_sheet_name || 'Digest';
 
-  if (!webhookUrl) {
+  if (!sheetId) {
     console.error(
-      '[digest] No webhook URL. Set one via --webhook, $ZAPIER_DIGEST_WEBHOOK_URL, or\n' +
-        '         digest_webhook_url in config/candidate-profile.yml.\n' +
-        '         (Use --dry-run to test formatting without sending.)'
+      '[digest] No Google Sheet ID. Set one via --sheet-id, $GOOGLE_SHEETS_DIGEST_ID, or\n' +
+        '         digest_sheet_id in config/candidate-profile.yml.\n' +
+        '         (Use --dry-run to test formatting without writing.)'
     );
     process.exit(2);
   }
 
-  const res = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
+  let sheetsClient;
+  try {
+    sheetsClient = await buildSheetsClient();
+  } catch (err) {
     console.error(
-      `[digest] Webhook POST failed: ${res.status} ${res.statusText}\n${text.slice(0, 300)}`
+      `[digest] Could not authenticate with Google Sheets: ${err.message}\n` +
+        '         Check $GOOGLE_APPLICATION_CREDENTIALS points to a valid service\n' +
+        '         account key file, and that the account has Editor access on the sheet.'
     );
     process.exit(3);
   }
 
+  try {
+    await appendDigestRow({ sheetsClient, sheetId, sheetName, row });
+  } catch (err) {
+    console.error(`[digest] Sheets append failed: ${err.message}`);
+    process.exit(3);
+  }
+
   console.error(
-    `[digest] Sent ${jobs.length} job${jobs.length === 1 ? '' : 's'} to the webhook (${res.status}).`
+    `[digest] Appended ${jobs.length} job${jobs.length === 1 ? '' : 's'} as one row to "${sheetName}" (sheet ${sheetId}).`
   );
 }
 
