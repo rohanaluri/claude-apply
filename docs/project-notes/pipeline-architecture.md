@@ -3,98 +3,59 @@
 Base repo: https://github.com/LeoLaborie/claude-apply (forked to `rohanaluri/claude-apply`, private)
 Orchestration: Claude Code Routines (cloud, Anthropic-managed)
 Local execution environment: WSL2 (Ubuntu) on a Windows host
-Notification: Zapier Webhook → Gmail
+Notification: Google Sheets (Sheets API write) → Zapier (New Spreadsheet Row trigger) → Gmail
 
 ---
 
 ## 0. Key Decisions Log
 
-1. **No AI agent ever reads a live page turn-by-turn.** Every AI call in this pipeline is
-   one prompt in, one structured answer out — never an agent deciding what to click next.
-   Reading pages and filling forms is done by plain code (Playwright), confirmed to already
-   exist in the base repo (see Section 7).
-2. **Most form fields need zero AI at all.** The repo's `field-classifier.mjs` matches a
-   field's label/name against known patterns (email, phone, name, education, work
-   authorization, EEO questions, etc.) and pulls the answer straight from your profile
-   data. Only genuine open-ended essay questions need an actual AI-written answer.
-3. **Phase 2 (scoring) is batched into one call per scan run**, not one call per job. All
-   pending postings + your CV go into a single prompt; Claude returns an array of
-   `{score, reason}` — no essay drafting happens here (see Decision #11: essay drafting
-   was consolidated into Phase 4 only, to avoid paying for an essay on jobs you never
-   actually apply to, and because Phase 2 can't know the real form question anyway).
-4. **Phase 4 (apply) makes at most one AI call per application** — only if that specific
-   form has a genuine free-text/essay question the classifier can't answer from profile
-   data. Many applications may need zero AI calls entirely.
-5. **This runs on the existing Pro subscription — no separate API key needed** at current
-   volume (~10 jobs scored + ~3 applications/day ≈ 4 short calls/day, well under Pro's
-   budget). Revisit only if volume scales up substantially.
-6. **Safety tripwire: the script halts at the final review screen and never clicks
-   Submit.** You always click Submit yourself, every time, no exceptions.
-7. **Local execution runs inside WSL2/Ubuntu**, not Windows directly — the base repo's
-   setup script and Chrome-detection logic only support Linux/macOS.
-8. **Phase 2 sends only extracted core text (title/requirements/description), not raw
-   page HTML.** Job postings can contain thousands of words of navigation, cookie
-   banners, and boilerplate around the actual description — sending that raw inflates
-   every prompt for no benefit. The scan/score pipeline must extract clean text before
-   it ever reaches a prompt. `src/score/index.mjs` already caps job text at
-   `jdMaxTokens: 1500` — needs verifying whether that's smart extraction or a blunt
-   cutoff (see Open Items).
-9. **Prompt caching is NOT implemented — deliberately skipped.** Investigated whether
-   Phase 4's per-application `claude -p` calls could use prompt caching to cut repeated
-   `cv.md` cost. Confirmed via the official Claude Code CLI reference that `claude -p`
-   has no flag for manually setting `cache_control` breakpoints — that's a raw
-   Anthropic Messages API feature, and the CLI builds its own request internally without
-   exposing that control. Getting real caching would mean bypassing `claude -p` entirely
-   for Phase 4 and calling `api.anthropic.com` directly with a paid API key — the same
-   extra infrastructure Decision #5 already decided wasn't worth it at current volume
-   (~3 applications/day). Chose to keep using `claude -p` as-is, uncached. Revisit only
-   if volume grows enough that caching's savings would outweigh the added complexity.
-10. **Phases 1-3 run on a strict single daily cron trigger** (e.g. 7:00 AM once/day) —
-    not on-demand, not multiple times while testing. This protects the ~5 routine-run/day
-    cap on Pro from being burned accidentally during development.
-11. **Essay drafting happens ONLY in Phase 4, never in Phase 2.** Originally Phase 2 also
-    drafted an essay for every job scoring ≥85, for a digest-email preview. Removed
-    because: (a) it charges an AI call for every qualifying job even if you never click
-    `/apply` on most of them, and (b) Phase 2 doesn't know the real free-text question a
-    specific ATS form will actually ask — Phase 4 discovers that live when it scans the
-    real page. Phase 4's Step C (see Section 6) is now the single place an essay answer
-    ever gets written, only for the job you're actually applying to, using the real
-    question text.
-12. **No cloud Routine exists yet for this project.** The only Routine currently
-    configured on this account is an unrelated morning news briefing — useful only as a
-    reference for _how_ to structure a Routine, not something this pipeline builds on
-    top of. Creating the real Routine for Phases 1-3 is still fully unbuilt (see Open
-    Items).
-13. **Phase 3 sends via a plain Zapier webhook, not Zapier MCP.** Confirmed: MCP tools
-    can only be invoked by Claude during a conversation turn — there's no way for
-    deterministic Node code to call one directly. Since Phase 3 has no AI in it at all,
-    routing it through MCP would mean spinning up a Claude turn just to send an
-    already-fully-formatted email. A plain `fetch()` POST to a pre-built Zapier
-    webhook ("Webhook trigger → Send Gmail") is simpler, cheaper, and genuinely $0 AI.
-14. **Score schema confirmed from the real code, not redesigned:** `{score, reason}`,
-    where `score` is **0-10** (not 1-100 — corrected from an earlier wrong assumption
-    in this doc) and `reason` is 2-3 short bullets joined into one string with `" | "`
-    as the delimiter, for storage/back-compat with the existing TSV tracker and JSONL
-    format. `computeVerdict()` and `DEFAULT_AUTO_APPLY_MIN_SCORE = 7` already depend on
-    the 0-10 scale — changing it would silently break the apply/skip threshold, so the
-    scale was kept as-is rather than "upgraded."
-15. **The original repo's Phase 2 prompt was written for a different person entirely** —
-    a French engineering student applying to 6-month internships ("stage"), not a US
-    Associate Data Scientist full-time search. This also explained the earlier mystery of
-    French text appearing in Phase 1's dry-run output. Rewrote `SYSTEM`/`CRITERIA` in
-    `prompt-builder.mjs` in English for the actual target profile; dropped the
-    internship-specific "6 month duration" red flag rule.
-16. **Phase 4 promoted from POC to a real code-driven script (2026-08-22).**
-    `src/apply/index.mjs` now exists as a plain Playwright/CDP program implementing
-    Steps A-E from Section 6 directly — no AI agent reads the page (see Decision #1).
-    `.claude/commands/apply.md` was rewritten from a ~440-line agent playbook into a
-    thin wrapper: it checks the profile exists, runs `node src/apply/index.mjs
-$ARGUMENTS` as a single Bash call, and relays the output verbatim — Claude does not
-    re-interpret or narrate what the script already reported. Confirmed via the real
-    `/apply` slash command, not just direct `node` invocation. Three real bugs were
-    found and fixed by testing against a live posting (PointClickCare, Lever) rather
-    than mock data alone — see Section 6 and Open Items for what's still unverified
-    (location-autocomplete fill, EEO/skill-rating coverage, cover letter wiring).
+Short-form index of key choices and why. Full reasoning for anything Phase-3 or
+Routine-related now lives in Sections 5 and 8 — this list points there rather than
+repeating it.
+
+1. No AI agent reads pages turn-by-turn — Playwright walks/fills the page; AI only
+   answers genuine free-text fields (see Section 6).
+2. ~30 standard field types need zero AI — `field-classifier.mjs` matches them straight
+   to profile data.
+3. Phase 2 scoring is batched: one `claude -p` call for all pending offers, not one per
+   job (see Section 4).
+4. Phase 4 makes at most one AI call per application, only for fields with no
+   deterministic match (see Section 6).
+5. Runs on the existing Pro subscription — no separate API key needed at current volume.
+6. Safety tripwire: the script never clicks Submit — you always do (see Section 6).
+7. Local execution is WSL2/Ubuntu, not native Windows — the repo's setup script requires
+   it (see Section 1).
+8. Phase 2 sends extracted job text, not raw HTML — `jd-truncate.mjs` confirmed genuine
+   section-based extraction, not a blunt cutoff.
+9. No prompt caching anywhere in the pipeline — `claude -p` exposes no manual
+   cache-breakpoint control; not worth bypassing it at current volume.
+10. Phases 1-3 run on one strict daily cron trigger, not on-demand — protects the
+    5-routine-run/day Pro cap (see Section 8).
+11. Essay drafting happens only in Phase 4, for the specific job applied to — never
+    pre-drafted in Phase 2.
+12. No cloud Routine existed as of 2026-08-22 — resolved 2026-08-23/24, see Section 8.
+13. Phase 3 delivers via Google Sheets → Zapier → Gmail, not a webhook — Zapier's
+    Webhooks app turned out to be Premium-only; Sheets is free and doesn't reintroduce
+    AI into Phase 3. Full story and mechanism in Section 5.
+14. Score scale is 0-10 (not 1-100); `reason` is short bullets joined with `" | "`.
+15. Phase 2's prompt was rewritten from French/internship criteria to English/US
+    Associate-Data-Scientist criteria.
+16. Phase 4 was promoted from POC to a real code-driven script — full detail in
+    Section 6.
+17. The digest writes one row per day, never one per job — keeps it a single combined
+    email instead of N separate ones (see Section 5).
+18. Google auth uses a service account, delivered two ways — a local key file for WSL2,
+    an env var for the cloud Routine — never a committed key file (see Sections 5, 8).
+19. The cloud Routine's network access must be Custom with explicit domains — the
+    default "Trusted" level only allows package registries (see Section 8).
+20. `npm install` belongs in the Routine's own instructions, not the Environment's setup
+    script — the setup script's working directory isn't the repo root (see Section 8).
+21. `candidate-profile.yml`'s schema is a strict field allowlist — new config keys must
+    be added to it explicitly, and it gates Phase 1 regardless of which phase actually
+    needs the new field (see Section 7's inventory).
+22. `candidate-profile.yml` and `portals.yml` are force-committed despite the blanket
+    `.gitignore` rule, since neither holds real secrets yet; `cv.md` and the
+    service-account key remain deliberately uncommitted (see Section 8).
 
 ---
 
@@ -139,7 +100,38 @@ npx playwright install chromium
 ```
 
 **What doesn't run here:** Phases 1-3 run in the cloud Routine, cloning the repo fresh
-each run. This environment is specifically for Phase 4.
+each run (see Section 8). This environment is specifically for Phase 4.
+
+### 1a. File paths reference (for moving files between Windows, WSL2, and the repo)
+
+All local terminal work in this project has used a **WSL2 Ubuntu bash** shell (prompt
+shape: `rohan@Rohans-PC:~/claude-apply$`) — not native Windows PowerShell. This section
+exists so file-move commands (e.g. "copy a file Claude generated into the repo") are
+always given in the right shell with the right path style.
+
+| What | WSL2 path (bash) | Windows path (native) |
+| --- | --- | --- |
+| Windows Downloads folder | `/mnt/c/Users/rohan/Downloads/` | `C:\Users\rohan\Downloads\` |
+| Repo root | `/home/rohan/claude-apply` (equivalently `~/claude-apply`) | `\\wsl$\Ubuntu\home\rohan\claude-apply` |
+| Config dir | `~/claude-apply/config/` | `\\wsl$\Ubuntu\home\rohan\claude-apply\config` |
+| Google service-account key (never committed) | `~/claude-apply/config/google-service-account.json` | — |
+
+**Standard pattern used throughout this project** — a file downloaded from Claude's chat
+UI lands in the Windows Downloads folder, then gets copied into the repo from a WSL2 bash
+terminal (note the `/mnt/c/...` prefix, which is how WSL2 mounts the Windows `C:` drive):
+
+```bash
+cp /mnt/c/Users/rohan/Downloads/<filename> ~/claude-apply/<destination path>
+```
+
+**PowerShell equivalent** (for reference only — not the pattern actually used in this
+project; only relevant if a future session runs commands directly in Windows PowerShell
+instead of WSL2 bash), using PowerShell's `\\wsl$` UNC path to reach into the WSL2
+filesystem from Windows:
+
+```powershell
+Copy-Item C:\Users\rohan\Downloads\<filename> \\wsl$\Ubuntu\home\rohan\claude-apply\<destination path>
+```
 
 ---
 
@@ -151,8 +143,8 @@ flowchart TD
     B -->|"node src/scan/index.mjs<br/>reads portals.yml → Greenhouse/Lever/Ashby<br/>title filter: role level"| C[("data/pipeline.md")]
     C --> D["<b>Phase 2 — Batched Scoring</b><br/>cloud, ONE AI call for the whole batch"]
     D -->|"cv.md once + ALL postings<br/>→ array of score + reason"| E[("data/evaluations.jsonl")]
-    E -->|"filter: score ≥ 7 (of 10)"| F["<b>Phase 3 — Digest Email</b><br/>cloud, Zapier Webhook, $0 AI"]
-    F --> G["📧 You review digest<br/>pick a job, paste /apply url"]
+    E -->|"filter: score ≥ 7 (of 10)"| F["<b>Phase 3 — Digest</b><br/>cloud, $0 AI<br/>writes 1 row/day to Google Sheets"]
+    F -->|"Zapier: New Spreadsheet Row<br/>→ Send Gmail"| G["📧 You review digest<br/>pick a job, paste /apply url"]
     G --> H["<b>Phase 4 — Local Apply</b><br/>WSL2/Ubuntu, 0–1 AI calls"]
     H --> H1["Step A — scan every field<br/>💲0 AI"]
     H1 --> H2["Step B — fill known fields<br/>from profile · 💲0 AI"]
@@ -180,10 +172,16 @@ _Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdo
 
 **Command:** `node src/scan/index.mjs`
 
-**Confirmed working** via `--dry-run` against placeholder companies — connected to real
-Lever endpoints, correctly wrote zero files, correctly found zero results (placeholder
-board slugs, not a bug). Real results require real companies in `config/portals.yml`
-(intentionally not filled in yet).
+**Confirmed working end-to-end in the real cloud Routine (2026-08-24)** — not just
+`--dry-run`. Correctly scans every company in `config/portals.yml`, prefilters by
+title/blacklist/location/date, dedupes against `data/scan-history.tsv`, and appends
+survivors to `data/pipeline.md`.
+
+**Known current gap, not a code bug:** `portals.yml`'s tracked companies are still
+placeholder/example data. As of 2026-08-24, 3 of 4 (Anthropic, Photoroom, ElevenLabs)
+return HTTP 404 from the Lever API — their `careers_url` slugs are wrong or stale, and
+Anthropic in particular likely isn't on Lever at all. Only Mistral AI's board actually
+responds (0 open roles matching the current title filter). See Open Items.
 
 ---
 
@@ -241,36 +239,74 @@ this pipeline, not just Phase 2).
 
 **Output:** `data/evaluations.jsonl`, one line per offer.
 
+**Not yet proven in the cloud Routine:** the 2026-08-24 Routine run's scan step found 0
+new postings (see Section 3's gap), so this step had nothing to score and exited
+trivially — `config/cv.md` (still uncommitted, see Decision #22 and Open Items) was
+never actually needed or exercised by that run. Genuine multi-offer batching in
+production (N > 1 real postings, real API call, real cv.md read) remains unproven — see
+Open Items.
+
 ---
 
-## 5. Phase 3 — Digest Email (Cloud, Zapier Webhook, $0 AI)
+## 5. Phase 3 — Digest (Cloud, $0 AI, Google Sheets → Zapier → Gmail)
 
-**Status: script built (`src/digest/index.mjs`) and confirmed working via `--dry-run`**
-(2026-08-22) — correctly reads `evaluations.jsonl`, computes the threshold, and either
-formats a real digest or cleanly reports "nothing qualifies" without erroring. Not yet
-sent for real — no qualifying score (≥7) has occurred yet in testing, and the actual
-Zapier webhook URL hasn't been created (see Open Items).
+**Status: confirmed working end-to-end 2026-08-24** — a real test digest email was
+received in Gmail, not just designed or `--dry-run`'d. See Decision #13 for the full
+story of why this replaced the original webhook plan.
 
-**Mechanism: a plain webhook POST, not Zapier MCP (see Decision #13).** MCP tools can
-only be invoked by Claude in a conversation turn — deterministic code can't call one
-directly. Since this whole phase is $0 AI, routing it through MCP would mean spinning
-up a Claude turn just to send a fully-already-written email. Instead: one Zap is
-pre-built in Zapier ("Webhook trigger → Send Gmail"), and the script does a plain
-`fetch()` POST with the digest content as JSON.
+**Mechanism, in order:**
 
-**Filter:** `evaluations.jsonl` entries where `score >= 7` (0-10 scale — see Decision
-#14), scored **today** specifically, so a daily run doesn't re-send yesterday's jobs.
-Threshold is configurable via `--min-score`, `config/candidate-profile.yml`'s
-`digest_min_score`, or falls back to the same `auto_apply_min_score` Phase 2 uses.
+1. `node src/digest/index.mjs` reads `data/evaluations.jsonl`, filters to entries scored
+   **today** at/above the threshold (`--min-score`, else `digest_min_score`, else
+   `auto_apply_min_score`, else `7`), and builds the same markdown digest as before
+   (header, one `### Company — Role` block per qualifying job, score, why-fit bullets,
+   `/apply <url>` code block).
+2. It appends **exactly one row** to a Google Sheet (see Decision #17 for why one row,
+   never one per job) with columns, in order: `date`, `subject`, `job_count`, `body`
+   (the entire rendered markdown digest, as one cell).
+3. Zapier watches that Sheet — **Trigger: Google Sheets → "New Spreadsheet Row"**
+   (Instant) — and on a new row, runs **Action: Gmail → "Send Email"**, with the Zap's
+   Subject and Body fields mapped directly from the row's `subject` and `body` columns.
+   **Body type: Plain** — Markdown syntax (`##`, `**`, code fences) renders as literal
+   characters in the email, a deliberate simplification for the POC, not a bug (see Open
+   Items for the optional HTML-formatting upgrade path).
 
-**Email includes:** company, title, score, why-fit bullets (split back out from the
-stored `reason` string), and an `/apply <url>` command block per qualifying job. No
-essay preview — essays are only ever drafted in Phase 4, for the specific job you
+**Google Sheet:**
+- Name: "Daily Application Digest"
+- Tab: "Digest"
+- Columns (row 1 headers): `date | subject | job_count | body`
+- Spreadsheet ID stored in `config/candidate-profile.yml` as `digest_sheet_id`
+  (resolution order: `--sheet-id` flag → `$GOOGLE_SHEETS_DIGEST_ID` env var →
+  `digest_sheet_id` in the profile)
+
+**Auth — Google service account:**
+- Service account: `digest-writer@claude-apply.iam.gserviceaccount.com`
+- Scope: `https://www.googleapis.com/auth/spreadsheets` only — no other Google API access
+- Shared on the target Sheet as Editor (required for the API to write rows)
+- Credential delivery is dual-path (see Decision #18): a local key file at
+  `config/google-service-account.json` (referenced via the standard
+  `$GOOGLE_APPLICATION_CREDENTIALS` env var, `.gitignore`'d, never committed) for WSL2
+  runs, and the same key's raw JSON content stored as the `GOOGLE_SERVICE_ACCOUNT_JSON`
+  environment variable on the cloud Routine's custom Environment (`claude-apply`) for
+  cloud runs — `digest/index.mjs`'s `buildSheetsClient()` checks for the env var first,
+  falls back to the file-path method if absent.
+
+**Why Zapier's Free plan is genuinely sufficient here (see Decision #13):** Google
+Sheets and Gmail are both non-premium Zapier apps, so this fits inside Free's 2-step Zap
+limit with no premium-app paywall. Trigger checks (polling or the "instant" push variant)
+never consume Zapier tasks — confirmed directly from Zapier's own pricing page and help
+docs — only the Gmail send action does, at roughly 1 task/day for a once-daily digest,
+far under the 100-task/month Free allowance.
+
+**Filter:** unchanged from the original design — `evaluations.jsonl` entries where
+`score >= 7` (0-10 scale, see Decision #14), scored **today** specifically, so a daily
+run doesn't re-send yesterday's jobs.
+
+**No essay preview** — essays are only ever drafted in Phase 4, for the specific job you
 choose to apply to (see Decision #11).
 
-**`--dry-run` prints the full payload and rendered markdown, sends nothing** — this is
-the safe way to test formatting without a webhook configured yet, and was used for
-today's confirmation test.
+**`--dry-run` prints the full row/payload and rendered markdown, writes nothing** — the
+safe way to test formatting without touching the Sheet.
 
 ---
 
@@ -367,16 +403,125 @@ exist.
 | `apply-log.mjs`                             | Simple JSON-line logging of each apply attempt                                                                                                                                                                                                                                                           | No                                                            |
 | `score/prompt-builder.mjs`                  | `buildPrompt()` / `buildBatchPrompt()` — rewritten today for English/US criteria; confirmed 0-10 scale, `{score, reason}` shape                                                                                                                                                                          | Builds the prompt for Phase 2's call                          |
 | `score/jd-truncate.mjs`                     | `truncateJd()` — confirmed genuine smart section-based extraction (keeps Requirements/Qualifications, drops About-us/Benefits), not a blunt cutoff                                                                                                                                                       | No                                                            |
-| `apply/index.mjs`                           | **New 2026-08-22.** Top-level Phase 4 orchestrator — Playwright/CDP, calls `field-classifier`, `dom-label`, `react-select-helper`, `upload-file`, `apply-log` directly. Confirmed working live (twice) against a real Lever posting. Does NOT yet call `cover-letter.mjs`/`renderLatex` — see Open Items | 1 batched call per page, only for genuine free-text questions |
-| `.claude/commands/apply.md`                 | **Rewritten 2026-08-22.** Thin wrapper: checks profile exists, runs `index.mjs` as one Bash call, relays output verbatim. Replaces the former ~440-line agent playbook                                                                                                                                   | No (Claude just invokes and relays)                           |
+| `apply/index.mjs`                           | Top-level Phase 4 orchestrator — Playwright/CDP, calls `field-classifier`, `dom-label`, `react-select-helper`, `upload-file`, `apply-log` directly. Confirmed working live (twice) against a real Lever posting. Does NOT yet call `cover-letter.mjs`/`renderLatex` — see Open Items                     | 1 batched call per page, only for genuine free-text questions |
+| `.claude/commands/apply.md`                 | Thin wrapper: checks profile exists, runs `index.mjs` as one Bash call, relays output verbatim. Replaces the former ~440-line agent playbook                                                                                                                                                            | No (Claude just invokes and relays)                           |
+| `digest/index.mjs`                          | **Rewritten 2026-08-24.** Reads `evaluations.jsonl`, filters by score/date, builds the markdown digest, then appends one `[date, subject, job_count, body]` row to a Google Sheet via `spreadsheets.values.append()`. Auth via `GOOGLE_SERVICE_ACCOUNT_JSON` (cloud) or `GOOGLE_APPLICATION_CREDENTIALS` file (local). Confirmed working end-to-end — real email received. See Section 5 | No                                                            |
+| `lib/candidate-profile.schema.mjs`          | `validateProfile()` — strict allowlist validator for `candidate-profile.yml` (`REQUIRED_FIELDS` + `OPTIONAL_FIELDS`); rejects any key not on the list. Updated 2026-08-24 to allow `digest_sheet_id`/`digest_sheet_name`/`digest_min_score` — see Decision #21                                          | No                                                            |
+| `lib/load-profile.mjs`                      | `loadProfile()` — reads and validates `candidate-profile.yml` against the schema above; called by both `scan/index.mjs` and `score/index.mjs`, which is why a schema mismatch in one config field can block Phase 1 even if only Phase 3 needed that field (see Decision #21)                          | No                                                            |
 
 ---
 
-## 8. Open Items
+## 8. Cloud Routine & Environment Configuration
+
+**Status: confirmed working end-to-end 2026-08-24** — a real scheduled Routine run
+completed all four steps with exit code 0. Resolves Decision #12.
+
+**Routine name:** "Job Pipeline — Scan, Score, Digest"
+**Repository:** `rohanaluri/claude-apply`
+**Trigger:** Schedule → Daily → 7:00 AM EDT (per Decision #10)
+**Environment:** custom cloud Environment named `claude-apply` (see below) — NOT the
+account's default "Daily Notifications" Environment, which belongs to an unrelated
+morning-news Routine and should stay untouched (see Section on Routine daily-run cap
+below).
+
+**Instructions (the Routine's actual prompt), in full:**
+
+```
+Run the daily job-pipeline steps in this exact order, from the repo root:
+
+1. npm install
+2. node src/scan/index.mjs
+3. node src/score/index.mjs --batch
+4. node src/digest/index.mjs
+
+Run each command exactly as written — do not modify flags, do not skip
+steps, and do not improvise alternate commands if one fails. If any
+command exits with a non-zero code, stop immediately and report the
+exact error output rather than attempting to continue or fix it.
+
+After all four complete successfully, report a short summary: how many
+new postings Phase 1 found, how many Phase 2 scored (and their scores),
+and whether Phase 3 wrote a digest row today or reported nothing
+qualified.
+```
+
+Note `npm install` is step 1 of the *instructions*, not the Environment's setup script —
+see Decision #20 for why that split matters.
+
+**Custom Environment `claude-apply` configuration:**
+- **Network access:** Custom (not the default "Trusted" — see Decision #19), with these
+  domains explicitly allowed:
+  - `api.lever.co` (Phase 1 scan)
+  - `sheets.googleapis.com` (Phase 3 Sheets write)
+  - `oauth2.googleapis.com` (Phase 3 service-account auth token exchange)
+  - "Also include default list of common package managers" — checked, so `npm install`
+    still works alongside the custom domains
+  - **Not yet added, needed if `portals.yml` grows:** `api.ashbyhq.com` (Ashby
+    companies), `*.myworkdayjobs.com` per company (Workday companies) — see Open Items
+- **Environment variables:** `GOOGLE_SERVICE_ACCOUNT_JSON` — the service account's full
+  key JSON, single-line (see Decision #18). No other env vars set.
+- **Setup script:** currently still contains a leftover, now-redundant `npm install`
+  (harmless — see Open Items) from before Decision #20's fix; the actual `npm install`
+  that matters runs as step 1 of the Instructions above.
+
+**Daily-run cap:** Pro allows 5 automated Routine runs/day, **shared across the whole
+account**, not per-Routine — confirmed via Anthropic's own routines documentation.
+This account already has one other Routine (the unrelated morning-news briefing, 1
+run/day); adding this one brings the total to 2/day, comfortably under the cap. Manual
+"Run now" clicks do **not** count against this cap (confirmed from the same docs) — used
+extensively during today's debugging without any budget concern.
+
+---
+
+## 9. Open Items
 
 - [x] ~~Top-level Phase 4 orchestration script doesn't exist yet.~~ **Resolved
       2026-08-22:** `src/apply/index.mjs` built, promoted from the POC, confirmed
       working live via the real `/apply` command against a real Lever posting.
+- [x] ~~The real Zapier webhook doesn't exist yet.~~ **Superseded 2026-08-24 — see
+      Decision #13:** the webhook approach was abandoned (Zapier's Webhooks app is
+      Premium-only); replaced with a confirmed-working Google Sheets → Zapier → Gmail
+      flow, tested with a real received email.
+- [x] ~~No cloud Routine has been created for this project yet.~~ **Resolved
+      2026-08-23/24:** Routine created, scheduled daily at 7:00 AM EDT, and confirmed
+      running all four pipeline steps end-to-end with exit code 0 — see Section 8.
+- [ ] **`config/portals.yml`'s tracked companies are mostly stale/wrong.** As of
+      2026-08-24, 3 of 4 (Anthropic, Photoroom, ElevenLabs) return HTTP 404 from the
+      Lever API — Anthropic in particular likely isn't on Lever at all (probably
+      Greenhouse). Only Mistral AI's board responds, with 0 roles matching the current
+      filter. Needs real research into correct company slugs/ATS platforms before Phase
+      1 produces any real postings — this is also what's blocking a genuine multi-offer
+      proof of Phase 2's batching (see below).
+- [ ] **Phase 2's true multi-offer batching (N > 1 live postings, one prompt) is still
+      unproven in production.** The 2026-08-24 cloud run's scan found 0 new postings
+      (see above), so score had nothing to batch and exited trivially. Still only proven
+      with 1 real offer (2026-08-22 session) plus isolated unit tests. Blocked on fixing
+      `portals.yml`.
+- [ ] **`config/cv.md` is still not committed and has never been exercised by a cloud
+      run.** `candidate-profile.yml` and `portals.yml` were force-committed 2026-08-24
+      (see Decision #22), but `cv.md` remains local-only. Today's cloud run never
+      actually needed it (score had 0 offers to process), so whether Phase 2 can
+      successfully read `cv.md` in the cloud is still unverified — needs a real run with
+      ≥1 offer to prove.
+- [ ] **`google-service-account.json`'s full key contents were pasted into this chat's
+      history during setup.** Recommend rotating (delete + regenerate) the key in Google
+      Cloud Console as routine hygiene once active iteration on Phase 3 settles down.
+      Not urgent — narrow scope (Sheets-API-only, Editor on one non-sensitive
+      spreadsheet) and a solo-user account keep real risk low.
+- [ ] **Digest emails render as plain text — Markdown syntax shows as literal
+      characters** (`##`, `**`, code fences), since the Zap's Gmail action uses Body
+      type "Plain." Deliberate simplification for the POC, not a bug. Upgrading to real
+      HTML formatting would need either a Markdown→HTML formatter step added to the Zap,
+      or having `digest/index.mjs` render HTML directly instead of Markdown.
+- [ ] **The cloud Environment's network allowlist only covers Lever + Google APIs.**
+      Adding Ashby companies to `portals.yml` will need `api.ashbyhq.com` added to the
+      Custom allowlist; adding Workday companies will need each company's own
+      `*.myworkdayjobs.com` domain added — otherwise those scans will silently 403-fail
+      the same way Lever did before this was fixed (see Decision #19).
+- [ ] **The Environment's Setup script still contains a leftover, now-redundant `npm
+      install`** left over from before it was moved into the Routine's own Instructions
+      (Decision #20). Harmless (re-runs quickly, does nothing extra) but worth clearing
+      out for cleanliness.
 - [ ] **Location-autocomplete fill is not yet confirmed working.** Detection is fixed
       (routes to a dedicated `location` action instead of the AI free-text pool), but
       the actual fill — typing + selecting a real dropdown suggestion — has been tested
@@ -395,10 +540,6 @@ exist.
 - [ ] **Cover-letter generation isn't wired into `index.mjs` yet.** `cover-letter.mjs`'s
       `renderLatex()` exists and is real, but calling it from Phase 4 hasn't been done —
       `cover_letter_upload`/`cover_letter_text` fields currently route to manual review.
-- [ ] **Fixes made after the initial classifier merge (company/role parsing, work_auth/
-      sponsorship reordering, location detection) — confirm these have been committed
-      and pushed to the fork**, not just tested locally, before considering Phase 4
-      promotion fully closed out.
 - [ ] **Only tested on one ATS (Lever), one company.** Everything platform-specific in
       today's fixes (the location field's structure, in particular) is Lever-shaped and
       unverified elsewhere — Greenhouse, Ashby, and Workday each implement custom
@@ -413,31 +554,17 @@ exist.
 - [ ] **`claude-in-chrome` extension's exact role is still unclear** now that Phase 4 is
       code-driven rather than agent-driven. May not be needed at all for the new design —
       needs confirming before assuming it's required.
-- [ ] **`config/cv.md`, `config/candidate-profile.yml`, `config/portals.yml` are still
-      templates.** Real data needed before either phase produces meaningful output.
-      (`cv.md` currently holds the repo's own French-student example, used today only as
-      throwaway test data for Phase 2 — never assumed real.)
-- [ ] **`config/` and `data/` are `.gitignore`'d by default** — `cv.md` needs to be
-      explicitly committed to the private fork for the cloud Routine to see it.
-- [ ] Confirm Claude Code Routines' daily run cap (previously found to be ~5/day on Pro,
-      shared with all Claude Code/chat usage) comfortably fits a single daily 7:00 AM
-      trigger plus normal interactive development usage.
-- [ ] **The real Zapier webhook doesn't exist yet.** Need to actually build the Zap
-      ("Webhook trigger → Send Gmail") in Zapier and get its URL before Phase 3 can send
-      anything for real — `--dry-run` is the only mode tested so far.
-- [ ] **Phase 2 has only been tested with 1 surviving live offer, not a real multi-offer
-      batch.** Two of the three test postings used were already dead (404 / redirected)
-      by the time of testing — that's a data problem, not a code problem, but the batch
-      path's "multiple offers in one prompt, matched back correctly by URL" behavior
-      hasn't been proven yet with N > 1. Worth a follow-up run with fresh live postings.
+- [ ] **`config/cv.md` and `config/candidate-profile.yml`'s personal fields are still
+      templates.** Real data needed before either phase produces meaningful output for
+      you specifically. (`cv.md` currently holds the repo's own French-student example,
+      used today only as throwaway test data — never assumed real.)
+- [ ] Confirm Claude Code Routines' daily run cap (5/day on Pro, shared across the whole
+      account, confirmed — see Section 8) stays comfortable once both Routines run
+      daily plus normal interactive Claude Code development usage.
 - [ ] **Real per-call cost is now measured, not estimated: $0.11 for one offer, cache
-      miss** (first call ever, nothing to read from cache). Still need a second same-day
+      miss** (first call ever, nothing to read from cache). Still need a same-day repeat
       run to see the `cache_read` number and get a real repeat-call cost, not just the
       first-call cost.
-- [ ] **No cloud Routine has been created for this project yet** (see Decision #12) —
-      needs to actually be set up at claude.ai/code/routines, pointed at the private
-      fork, before Phase 1-3 can run unattended at all. Nothing has run on a schedule
-      yet; Phase 1 has only been dry-run manually.
 
 ---
 
