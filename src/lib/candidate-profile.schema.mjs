@@ -38,6 +38,9 @@ const OPTIONAL_FIELDS = [
   'internship_duration_months',
   'job_type',
   'auto_generate_cover_letter',
+  'digest_sheet_id',
+  'digest_sheet_name',
+  'digest_min_score',
 ];
 
 function validateEducationEntry(e, i) {
