@@ -50,6 +50,57 @@ async function fetchOfferBody(url) {
       cssLocation: '',
     };
   }
+
+  // Lever: reuse the same public board API Phase 1 already uses (plain
+  // fetch, no browser) instead of navigating the rendered page with
+  // Playwright. The cloud Routine sandbox blocks real browser navigation
+  // (CONNECT tunneling unsupported), but plain HTTPS fetch to api.lever.co
+  // already works — same mechanism Phase 1's fetchLever() uses. Falls
+  // through to the Playwright path below only if this fails.
+  const leverMatch = url.match(/^https:\/\/jobs\.lever\.co\/([^/]+)\//);
+  if (leverMatch) {
+    const slug = leverMatch[1];
+    const apiUrl = `https://api.lever.co/v0/postings/${slug}?mode=json`;
+    try {
+      const res = await fetch(apiUrl, {
+        headers: { Accept: 'application/json', 'User-Agent': 'claude-apply-score/1.0' },
+      });
+      if (res.ok) {
+        const postings = await res.json();
+        const match = Array.isArray(postings)
+          ? postings.find((p) => p.hostedUrl === url)
+          : null;
+        if (match) {
+          return {
+            finalUrl: url,
+            status: 200,
+            body: match.descriptionPlain || '',
+            scrapedTitle: match.text || '',
+            scrapedCompany: '',
+            scrapedLocation: match.categories?.location || '',
+            ldJsonBlocks: [],
+            ogLocation: '',
+            cssLocation: '',
+          };
+        }
+        // Posting no longer in the live board response — likely closed/removed.
+        return {
+          finalUrl: url,
+          status: 404,
+          body: '',
+          scrapedTitle: '',
+          scrapedCompany: '',
+          scrapedLocation: '',
+          ldJsonBlocks: [],
+          ogLocation: '',
+          cssLocation: '',
+        };
+      }
+    } catch {
+      // Network error on the API call — fall through to Playwright below.
+    }
+  }
+
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true, channel: 'chromium', ...(fs.existsSync('/opt/pw-browsers/chromium') && { executablePath: '/opt/pw-browsers/chromium' }) });
   try {
