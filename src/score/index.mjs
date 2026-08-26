@@ -51,7 +51,7 @@ async function fetchOfferBody(url) {
     };
   }
   const { chromium } = await import('playwright');
-  const browser = await chromium.launch({ headless: true, channel: 'chromium' });
+  const browser = await chromium.launch({ headless: true, channel: 'chromium', ...(fs.existsSync('/opt/pw-browsers/chromium') && { executablePath: '/opt/pw-browsers/chromium' }) });
   try {
     const ctx = await browser.newContext({
       userAgent:
