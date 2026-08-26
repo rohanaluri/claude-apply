@@ -41,6 +41,7 @@ const OPTIONAL_FIELDS = [
   'digest_sheet_id',
   'digest_sheet_name',
   'digest_min_score',
+  'target_locations',
 ];
 
 function validateEducationEntry(e, i) {
