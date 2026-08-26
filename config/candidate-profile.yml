@@ -82,8 +82,12 @@ min_start_date: '2026-08-24'
 # --- Geographic targeting (optional) ---
 # Used by /scan to filter offers by location. Case-insensitive substring match.
 # When absent, derived from city + country above → ["France", "Paris", "Remote"].
-# target_locations:
-#   - France
-#   - Paris
-#   - Remote
+# Overridden here (POC step) so real US-based Lever postings (PointClickCare,
+# Analytic Partners) used to prove the end-to-end pipeline actually survive
+# the location filter instead of being silently dropped like the stale
+# France/Paris default would do.
+target_locations:
+  - Remote
+  - United States
+  - USA
 digest_sheet_id: '1G1SXo_Xac0meQueYGLfl04nYxcRrPHHJ6W5_-uqktQc'
