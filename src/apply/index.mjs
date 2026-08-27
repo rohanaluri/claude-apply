@@ -16,6 +16,17 @@
  *   and stops. A human reviews and submits. `isSubmitButton()` is the guard that
  *   keeps the multi-step "Next" walker from ever tripping a submit.
  *
+ * CAPTCHA HANDLING
+ *   Some sites (e.g. Lever's hCaptcha) trigger a challenge reactively, based on
+ *   interaction patterns, not just on initial page load — so a single check right
+ *   after `page.goto()` isn't enough. `detectBlockers()` looks for real captcha
+ *   DOM elements (iframes/widgets), not just page text, and `waitOutCaptcha()` is
+ *   called both at the start of every step and again after each step's fill
+ *   actions. When a captcha is found, the script pauses, prints a clear message,
+ *   and polls every few seconds until it clears (or a max wait is hit) — it does
+ *   NOT attempt to solve or bypass it, and never exits/restarts on this path; you
+ *   solve it in the browser and the run continues on its own.
+ *
  * PREREQ
  *   Chrome running with --remote-debugging-port=9222 (the `chrome-apply` alias).
  *
@@ -48,6 +59,12 @@ import { REACT_SELECT_SNIPPET } from './react-select-helper.mjs';
 
 const MAX_STEPS = 6; // hard cap on multi-step "Next" advances
 const NAV_SETTLE_MS = 1200;
+
+// Captcha pause/resume: how often to re-check, and how long to wait before
+// giving up. Waiting is a UX choice, not a workaround — we never attempt to
+// solve or bypass the challenge itself.
+const CAPTCHA_POLL_MS = 3000;
+const CAPTCHA_MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Anything matching these is a SUBMIT and must never be auto-clicked.
@@ -466,17 +483,71 @@ async function fillLocationAutocomplete(page, field, value) {
   return finalValue.trim().length > 0;
 }
 
+/**
+ * Checks for closed-offer, captcha, and login-wall blockers.
+ * Captcha detection checks for REAL captcha DOM elements (iframes/widgets from
+ * known vendors), not just page text — a visible hCaptcha/reCAPTCHA/Turnstile
+ * widget often doesn't put the literal word "captcha" anywhere in the page's
+ * visible text, so a text-only check can miss it. The CAPTCHA_PATTERNS text
+ * check is kept as a secondary signal (e.g. explicit "Verify you are human"
+ * copy some sites show).
+ */
 async function detectBlockers(page) {
   const info = await page.evaluate(`(() => ({
     text: (document.body.innerText || '').slice(0, 20000),
     hasPassword: !!document.querySelector('input[type="password"]'),
     hasFile: !!document.querySelector('input[type="file"]'),
+    hasCaptchaWidget: !!document.querySelector(
+      'iframe[src*="hcaptcha"], iframe[title*="hcaptcha" i], ' +
+      'iframe[src*="recaptcha"], iframe[title*="recaptcha" i], ' +
+      'iframe[src*="turnstile"], div[class*="cf-turnstile"], ' +
+      'div.h-captcha, div.g-recaptcha'
+    ),
   }))()`);
 
   if (CLOSED_PATTERNS.some((r) => r.test(info.text))) return { blocker: 'closed_offer' };
-  if (CAPTCHA_PATTERNS.some((r) => r.test(info.text))) return { blocker: 'captcha' };
+  if (info.hasCaptchaWidget || CAPTCHA_PATTERNS.some((r) => r.test(info.text))) {
+    return { blocker: 'captcha' };
+  }
   if (info.hasPassword && !info.hasFile) return { blocker: 'login_wall' };
   return { blocker: null };
+}
+
+/**
+ * If a captcha is present, pause and poll until it clears instead of failing
+ * the run outright. Prints an immediate, visible message so a long wait reads
+ * as "waiting on you," not a silent hang. Non-captcha blockers (closed offer,
+ * login wall) are NOT things solved by waiting, so they're returned as-is with
+ * no delay — the caller decides whether to stop.
+ *
+ * Never attempts to solve or bypass the captcha itself — only detects it and
+ * waits for a human to clear it in the browser.
+ */
+async function waitOutCaptcha(page, log) {
+  const first = await detectBlockers(page);
+  if (first.blocker !== 'captcha') return first;
+
+  console.error('\n⏸  Captcha detected — solve it in the browser window.');
+  console.error(
+    `   Waiting up to ${Math.round(CAPTCHA_MAX_WAIT_MS / 60000)} minute(s); I'll continue automatically once it clears.\n`
+  );
+  log.push('captcha detected — pausing for manual solve');
+
+  const start = Date.now();
+  while (Date.now() - start < CAPTCHA_MAX_WAIT_MS) {
+    await page.waitForTimeout(CAPTCHA_POLL_MS);
+    const check = await detectBlockers(page);
+    if (check.blocker !== 'captcha') {
+      const waitedSec = Math.round((Date.now() - start) / 1000);
+      console.error('▶  Captcha cleared — resuming.\n');
+      log.push(`captcha cleared after ${waitedSec}s — resumed`);
+      return check; // may still carry a different blocker found on re-check
+    }
+  }
+
+  console.error('✖  Captcha still present after the wait limit — stopping.\n');
+  log.push(`captcha not resolved within ${Math.round(CAPTCHA_MAX_WAIT_MS / 60000)}min — stopping`);
+  return { blocker: 'captcha', timedOut: true };
 }
 
 async function findNavButtons(page) {
@@ -617,7 +688,7 @@ async function main() {
     await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(NAV_SETTLE_MS);
 
-    const { blocker } = await detectBlockers(page);
+    const { blocker } = await waitOutCaptcha(page, log);
     if (blocker) {
       finalStatus = blocker === 'closed_offer' ? 'Discarded' : 'Failed';
       console.error(`✖ Blocked: ${blocker}. Resolve it in the browser, then re-run.`);
@@ -649,6 +720,21 @@ async function main() {
     const allPlans = [];
 
     for (let step = 1; step <= MAX_STEPS; step++) {
+      // Re-check at the start of every step — catches a captcha that appeared
+      // between steps (e.g. on the page that just loaded), before any typing
+      // happens on it.
+      if (!args.dryRun) {
+        const stepCheck = await waitOutCaptcha(page, log);
+        if (stepCheck.blocker) {
+          finalStatus = stepCheck.blocker === 'closed_offer' ? 'Discarded' : 'Failed';
+          console.error(
+            `✖ Blocked at step ${step}: ${stepCheck.blocker}. Resolve it in the browser, then re-run.`
+          );
+          errors.push(`step ${step}: ${stepCheck.blocker}`);
+          return;
+        }
+      }
+
       await expandSections(page, profile, log);
 
       const raw = await scanPage(page);
@@ -752,6 +838,21 @@ async function main() {
               errors.push(`AI call failed: ${e.message}`);
             }
           }
+        }
+
+        // Re-check again after this step's fill actions — this is the case that
+        // actually matters most: hCaptcha and similar can trigger reactively
+        // based on interaction patterns partway through filling, not just on
+        // load. Catching it here means we pause and resume cleanly instead of
+        // silently hanging on whatever the script tries next.
+        const postFillCheck = await waitOutCaptcha(page, log);
+        if (postFillCheck.blocker) {
+          finalStatus = postFillCheck.blocker === 'closed_offer' ? 'Discarded' : 'Failed';
+          console.error(
+            `✖ Blocked mid-step ${step}: ${postFillCheck.blocker}. Resolve it in the browser, then re-run.`
+          );
+          errors.push(`step ${step} post-fill: ${postFillCheck.blocker}`);
+          return;
         }
       }
 
