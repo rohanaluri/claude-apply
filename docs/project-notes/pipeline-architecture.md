@@ -54,8 +54,17 @@ repeating it.
     be added to it explicitly, and it gates Phase 1 regardless of which phase actually
     needs the new field (see Section 7's inventory).
 22. `candidate-profile.yml` and `portals.yml` are force-committed despite the blanket
-    `.gitignore` rule, since neither holds real secrets yet; `cv.md` and the
-    service-account key remain deliberately uncommitted (see Section 8).
+    `.gitignore` rule, since neither holds real secrets yet; `cv.md` was force-committed
+    the same way on 2026-08-26 once we confirmed it also holds no real PII — only the
+    service-account key remains deliberately uncommitted (see Section 8).
+23. Phase 2 fetches Lever job bodies via Lever's public API (plain `fetch()`), not
+    Playwright — the cloud Routine's sandbox proxy blocks real browser navigation
+    entirely (`net::ERR_TUNNEL_CONNECTION_FAILED`), a known Claude Code sandbox
+    limitation, not a fixable config issue. Two supporting fixes were needed first
+    (`executablePath` pointed at the sandbox's pre-installed browser symlink,
+    `channel: 'chromium'` to avoid needing the separate, not-installed headless-shell
+    build) before the real wall was found. Playwright remains the fallback for
+    non-Lever platforms — see Section 4.
 
 ---
 
@@ -86,13 +95,14 @@ code-driven Phase 4 below is still unconfirmed — see Open Items).
 **Claude Code:** installed natively inside Ubuntu, separate from any Windows-side install.
 
 **Playwright's headless Chrome (separate from `chrome-apply`):** Phase 2's scoring step
-uses `playwright`'s own headless Chromium to fetch job posting pages — this is a
-**completely separate browser install** from the CDP-controlled Chrome `chrome-apply`
-launches for Phase 4. Installed via `npx playwright install chromium`. Hit a real,
-current compatibility gap: Playwright does not yet officially support Ubuntu 26.04
-(confirmed via Microsoft's own issue tracker — other users hitting the identical error
-at the same time). Fixed with the documented workaround, telling Playwright to use its
-Ubuntu 24.04 build instead:
+uses `playwright`'s own headless Chromium to fetch job posting pages for non-Lever
+platforms (Lever now uses a plain API call instead — see Decision #23 and Section 4).
+This is a **completely separate browser install** from the CDP-controlled Chrome
+`chrome-apply` launches for Phase 4. Installed via `npx playwright install chromium`.
+Hit a real, current compatibility gap: Playwright does not yet officially support Ubuntu
+26.04 (confirmed via Microsoft's own issue tracker — other users hitting the identical
+error at the same time). Fixed with the documented workaround, telling Playwright to use
+its Ubuntu 24.04 build instead:
 
 ```bash
 export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64   # add to ~/.bashrc — needed at runtime, not just install
@@ -172,43 +182,88 @@ _Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdo
 
 **Command:** `node src/scan/index.mjs`
 
-**Confirmed working end-to-end in the real cloud Routine (2026-08-24)** — not just
-`--dry-run`. Correctly scans every company in `config/portals.yml`, prefilters by
+**Confirmed working end-to-end in the real cloud Routine, with real live postings
+(2026-08-26).** Correctly scans every company in `config/portals.yml`, prefilters by
 title/blacklist/location/date, dedupes against `data/scan-history.tsv`, and appends
 survivors to `data/pipeline.md`.
 
-**Known current gap, not a code bug:** `portals.yml`'s tracked companies are still
-placeholder/example data. As of 2026-08-24, 3 of 4 (Anthropic, Photoroom, ElevenLabs)
-return HTTP 404 from the Lever API — their `careers_url` slugs are wrong or stale, and
-Anthropic in particular likely isn't on Lever at all. Only Mistral AI's board actually
-responds (0 open roles matching the current title filter). See Open Items.
+**`portals.yml` and `target_locations` fixed 2026-08-26.** Tracked companies swapped to
+confirmed-live Lever boards (PointClickCare, Analytic Partners, alongside Mistral AI —
+which still returns 0, possibly a wrong/empty slug, flagged but not blocking); title
+filter broadened from the original repo's `Intern/Internship/Stage/Stagiaire` to
+`Data/Analyst/Scientist/Engineer`. Separately, `candidate-profile.yml`'s
+`target_locations` was silently deriving to `["France", "Paris", "Remote"]` from the
+placeholder `city`/`country` fields — added an explicit override
+(`Remote, United States, USA`) so real US postings aren't filtered out by location.
+Result: **19 real postings found** in the first run after both fixes (15 PointClickCare,
+4 Analytic Partners).
 
 ---
 
 ## 4. Phase 2 — Batched Scoring (Cloud, 1 AI call per run)
 
-**Status: rewritten and confirmed working with a real call against live postings**
-(2026-08-22) — not just designed. `src/score/index.mjs`'s `--batch` path now builds
-one prompt for every pending offer and makes exactly one `claude -p` call, instead of
-the original one-call-per-job loop. Verified end-to-end: fetched 3 real live postings,
-correctly filtered out 2 dead ones (HTTP 404 / redirected) via the deterministic
-liveness check before spending anything on them, sent the 1 survivor in a single
-prompt, got back a correctly-parsed, well-reasoned score. Real cost for that first
-call: **$0.11** (a pure cache-write, no prior cache to read from yet).
+**Status: confirmed working end-to-end in production (2026-08-26).** 19 real postings
+in, 17 survived liveness filtering, scored in one `claude -p` call, 0 crossed the
+`auto_apply_min_score` threshold (highest: 7.5) — expected, since `config/cv.md` is
+still Alice Martin's placeholder profile (French ML-research student) scored against
+real US Data Scientist/Analyst roles, mostly Principal/Senior-level. This run was the
+first real proof of multi-offer batching (previously only tested with N=1) and of
+`cv.md` loading correctly in the cloud (previously never exercised — see Decision #22).
 
-**Trigger:** strict single daily cron run (e.g. 7:00 AM), not on-demand. Prevents
-accidentally exhausting the ~5 routine-run/day cap on Pro during testing or iteration.
+**Trigger:** strict single daily cron run (7:00 AM), not on-demand — protects the
+~5 routine-run/day Pro cap.
 
-**Input text is extracted, not raw HTML — confirmed, not just assumed.** Read the real
-`src/score/jd-truncate.mjs` directly: it's genuine smart extraction, not a blunt
-cutoff — splits the posting into sections, explicitly keeps
-Responsibilities/Requirements/Qualifications, explicitly drops About-us/Benefits/EEO
-boilerplate, and only falls back to a raw prefix-slice if no sections match at all.
-Bonus: already bilingual-aware (matches French section headers too, a leftover from
-the original repo's use case). No changes needed here.
+**Job description fetching — Lever via plain API, not a browser (Decision #23).**
+`data/pipeline.md` only carries `url | company | title` between phases (body text isn't
+persisted there), so Phase 2 has to re-fetch each posting's body itself. It originally
+did this with Playwright driving a real headless Chromium to the rendered job page —
+but the cloud Routine's sandbox proxy blocks real browser navigation outright
+(`net::ERR_TUNNEL_CONNECTION_FAILED`), a known Claude Code sandbox architectural
+limitation (proxy doesn't support the CONNECT tunneling browsers need), not something
+fixable by browser/version config alone.
 
-**Score scale is 0-10, not 1-100** (see Decision #14 — this doc previously had it
-wrong). `reason` is 2-3 short bullets, stored as one string joined with `" | "`.
+Debugging path before finding the real fix (kept here since it's a durable, reusable
+lesson for any future browser-in-cloud-sandbox issue):
+1. First error: `browserType.launch: Executable doesn't exist` — the sandbox's
+   pre-installed Chromium (`-1194`) didn't match the version the `playwright` npm
+   package expected (`-1217`). Fixed by setting `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`
+   (env var on the Environment) so Playwright looks in the sandbox's actual pre-installed
+   location instead of trying to download a matching version (which is separately
+   blocked — `cdn.playwright.dev` isn't on the network allowlist, and adding it doesn't
+   fully solve this either, see below).
+2. Next error: still `Executable doesn't exist`, now looking for
+   `chromium_headless_shell-1217` specifically — Playwright defaults headless launches to
+   a separate, smaller "headless shell" binary since v1.49, which the sandbox doesn't
+   have (only the full `chromium` binary is pre-installed). Fixed by adding
+   `channel: 'chromium'` to the `launch()` call, forcing use of the full binary.
+2b. That still pointed at a hardcoded version-numbered path
+   (`chromium-1217/chrome-linux64/...`) that didn't match the pre-installed `-1194`
+   binary's real path. Real fix: `/opt/pw-browsers/chromium` is a symlink that always
+   points at whatever version is actually installed (confirmed via `ls -la`) — pointing
+   `executablePath` at that symlink directly sidesteps version-guessing entirely.
+   Conditional on `fs.existsSync(...)` so local WSL2 runs (no `/opt/pw-browsers`) fall
+   through to normal Playwright resolution, unaffected.
+3. With the browser now launching correctly, the real wall appeared:
+   `net::ERR_TUNNEL_CONNECTION_FAILED` on every single fetch — browser navigation itself
+   is blocked in this sandbox, confirmed as a known limitation via real, current GitHub
+   reports (`anthropics/claude-code#11791`: "Browser automation tools (Playwright,
+   Puppeteer, Selenium) are not supported in the web sandbox environment. The security
+   proxy does not support HTTPS CONNECT tunneling required by browsers.").
+
+**Actual fix:** for Lever URLs, `fetchOfferBody()` now calls the same public Lever board
+API Phase 1's `fetchLever()` already uses successfully in this exact sandbox
+(`api.lever.co/v0/postings/{slug}?mode=json`, plain `fetch()`, no browser, already
+allowlisted) and pulls `descriptionPlain` directly from the matching posting (matched by
+`hostedUrl`). No new dependency, no new domain to allowlist. Non-Lever platforms
+(Greenhouse, Ashby, Workday) still fall back to the original Playwright path — untested
+in the cloud sandbox and will likely hit the same tunnel wall if/when those platforms
+get added to `portals.yml` (see Open Items).
+
+**Input text is extracted, not raw HTML.** `jd-truncate.mjs` keeps
+Responsibilities/Requirements/Qualifications, drops About-us/Benefits/EEO boilerplate,
+caps at `jdMaxTokens` (default 1500/offer, applied per-offer even in the batched path —
+no cross-offer budget scaling yet, noted as a low-priority future item given current
+volume of ~3-4 postings/company).
 
 **Prompt shape (one call, whole batch):**
 
@@ -237,14 +292,11 @@ drafting happens exclusively in Phase 4, only for the job you actually apply to.
 **Prompt caching not used here** (see Decision #9 — deliberately skipped everywhere in
 this pipeline, not just Phase 2).
 
-**Output:** `data/evaluations.jsonl`, one line per offer.
-
-**Not yet proven in the cloud Routine:** the 2026-08-24 Routine run's scan step found 0
-new postings (see Section 3's gap), so this step had nothing to score and exited
-trivially — `config/cv.md` (still uncommitted, see Decision #22 and Open Items) was
-never actually needed or exercised by that run. Genuine multi-offer batching in
-production (N > 1 real postings, real API call, real cv.md read) remains unproven — see
-Open Items.
+**Output:** `data/evaluations.jsonl`, one line per offer — low scores are recorded, not
+discarded, each with its `score` and the 2-3 bullet `reason` Claude gave. Only entries
+scoring at/above threshold make it into Phase 3's digest email; everything else is still
+readable in this file (or via the dashboard — see `src/dashboard/`, not yet reviewed in
+this doc) for sanity-checking Claude's reasoning on rejected postings.
 
 ---
 
@@ -403,18 +455,20 @@ exist.
 | `apply-log.mjs`                             | Simple JSON-line logging of each apply attempt                                                                                                                                                                                                                                                           | No                                                            |
 | `score/prompt-builder.mjs`                  | `buildPrompt()` / `buildBatchPrompt()` — rewritten today for English/US criteria; confirmed 0-10 scale, `{score, reason}` shape                                                                                                                                                                          | Builds the prompt for Phase 2's call                          |
 | `score/jd-truncate.mjs`                     | `truncateJd()` — confirmed genuine smart section-based extraction (keeps Requirements/Qualifications, drops About-us/Benefits), not a blunt cutoff                                                                                                                                                       | No                                                            |
+| `score/index.mjs`                           | `fetchOfferBody()` — Lever URLs use a plain `fetch()` to Lever's public board API (Decision #23); non-Lever URLs fall back to Playwright (unproven in the cloud sandbox). `--batch` builds one prompt for all pending offers, one `claude -p` call total.                                              | 1 batched call per `--batch` run                              |
 | `apply/index.mjs`                           | Top-level Phase 4 orchestrator — Playwright/CDP, calls `field-classifier`, `dom-label`, `react-select-helper`, `upload-file`, `apply-log` directly. Confirmed working live (twice) against a real Lever posting. Does NOT yet call `cover-letter.mjs`/`renderLatex` — see Open Items                     | 1 batched call per page, only for genuine free-text questions |
 | `.claude/commands/apply.md`                 | Thin wrapper: checks profile exists, runs `index.mjs` as one Bash call, relays output verbatim. Replaces the former ~440-line agent playbook                                                                                                                                                            | No (Claude just invokes and relays)                           |
 | `digest/index.mjs`                          | **Rewritten 2026-08-24.** Reads `evaluations.jsonl`, filters by score/date, builds the markdown digest, then appends one `[date, subject, job_count, body]` row to a Google Sheet via `spreadsheets.values.append()`. Auth via `GOOGLE_SERVICE_ACCOUNT_JSON` (cloud) or `GOOGLE_APPLICATION_CREDENTIALS` file (local). Confirmed working end-to-end — real email received. See Section 5 | No                                                            |
-| `lib/candidate-profile.schema.mjs`          | `validateProfile()` — strict allowlist validator for `candidate-profile.yml` (`REQUIRED_FIELDS` + `OPTIONAL_FIELDS`); rejects any key not on the list. Updated 2026-08-24 to allow `digest_sheet_id`/`digest_sheet_name`/`digest_min_score` — see Decision #21                                          | No                                                            |
+| `lib/candidate-profile.schema.mjs`          | `validateProfile()` — strict allowlist validator for `candidate-profile.yml` (`REQUIRED_FIELDS` + `OPTIONAL_FIELDS`); rejects any key not on the list. Updated 2026-08-24 for `digest_sheet_id`/`digest_sheet_name`/`digest_min_score` (Decision #21); updated again 2026-08-26 for `target_locations`. | No                                                            |
 | `lib/load-profile.mjs`                      | `loadProfile()` — reads and validates `candidate-profile.yml` against the schema above; called by both `scan/index.mjs` and `score/index.mjs`, which is why a schema mismatch in one config field can block Phase 1 even if only Phase 3 needed that field (see Decision #21)                          | No                                                            |
 
 ---
 
 ## 8. Cloud Routine & Environment Configuration
 
-**Status: confirmed working end-to-end 2026-08-24** — a real scheduled Routine run
-completed all four steps with exit code 0. Resolves Decision #12.
+**Status: confirmed working end-to-end with real data 2026-08-26** — a real scheduled
+Routine run completed all four steps with exit code 0, found 19 real postings, scored 17
+in one batch call. Resolves Decision #12.
 
 **Routine name:** "Job Pipeline — Scan, Score, Digest"
 **Repository:** `rohanaluri/claude-apply`
@@ -451,15 +505,23 @@ see Decision #20 for why that split matters.
 **Custom Environment `claude-apply` configuration:**
 - **Network access:** Custom (not the default "Trusted" — see Decision #19), with these
   domains explicitly allowed:
-  - `api.lever.co` (Phase 1 scan)
+  - `api.lever.co` (Phase 1 scan, and now Phase 2's Lever body-fetch — Decision #23)
   - `sheets.googleapis.com` (Phase 3 Sheets write)
   - `oauth2.googleapis.com` (Phase 3 service-account auth token exchange)
   - "Also include default list of common package managers" — checked, so `npm install`
     still works alongside the custom domains
   - **Not yet added, needed if `portals.yml` grows:** `api.ashbyhq.com` (Ashby
     companies), `*.myworkdayjobs.com` per company (Workday companies) — see Open Items
-- **Environment variables:** `GOOGLE_SERVICE_ACCOUNT_JSON` — the service account's full
-  key JSON, single-line (see Decision #18). No other env vars set.
+  - **Deliberately NOT added:** `cdn.playwright.dev` — tried adding a
+    `npx playwright install chromium` step, which failed with a 403 from this domain;
+    turned out to be unnecessary once `PLAYWRIGHT_BROWSERS_PATH` was set to use the
+    sandbox's pre-installed browser instead (see Decision #23) — no download needed.
+- **Environment variables:**
+  - `GOOGLE_SERVICE_ACCOUNT_JSON` — the service account's full key JSON, single-line
+    (see Decision #18)
+  - `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` — added 2026-08-26, points Playwright at
+    the sandbox's pre-installed browser location instead of trying to download one (see
+    Decision #23)
 - **Setup script:** currently still contains a leftover, now-redundant `npm install`
   (harmless — see Open Items) from before Decision #20's fix; the actual `npm install`
   that matters runs as step 1 of the Instructions above.
@@ -469,7 +531,7 @@ account**, not per-Routine — confirmed via Anthropic's own routines documentat
 This account already has one other Routine (the unrelated morning-news briefing, 1
 run/day); adding this one brings the total to 2/day, comfortably under the cap. Manual
 "Run now" clicks do **not** count against this cap (confirmed from the same docs) — used
-extensively during today's debugging without any budget concern.
+extensively during debugging (2026-08-24 through 2026-08-26) without any budget concern.
 
 ---
 
@@ -485,24 +547,20 @@ extensively during today's debugging without any budget concern.
 - [x] ~~No cloud Routine has been created for this project yet.~~ **Resolved
       2026-08-23/24:** Routine created, scheduled daily at 7:00 AM EDT, and confirmed
       running all four pipeline steps end-to-end with exit code 0 — see Section 8.
-- [ ] **`config/portals.yml`'s tracked companies are mostly stale/wrong.** As of
-      2026-08-24, 3 of 4 (Anthropic, Photoroom, ElevenLabs) return HTTP 404 from the
-      Lever API — Anthropic in particular likely isn't on Lever at all (probably
-      Greenhouse). Only Mistral AI's board responds, with 0 roles matching the current
-      filter. Needs real research into correct company slugs/ATS platforms before Phase
-      1 produces any real postings — this is also what's blocking a genuine multi-offer
-      proof of Phase 2's batching (see below).
-- [ ] **Phase 2's true multi-offer batching (N > 1 live postings, one prompt) is still
-      unproven in production.** The 2026-08-24 cloud run's scan found 0 new postings
-      (see above), so score had nothing to batch and exited trivially. Still only proven
-      with 1 real offer (2026-08-22 session) plus isolated unit tests. Blocked on fixing
-      `portals.yml`.
-- [ ] **`config/cv.md` is still not committed and has never been exercised by a cloud
-      run.** `candidate-profile.yml` and `portals.yml` were force-committed 2026-08-24
-      (see Decision #22), but `cv.md` remains local-only. Today's cloud run never
-      actually needed it (score had 0 offers to process), so whether Phase 2 can
-      successfully read `cv.md` in the cloud is still unverified — needs a real run with
-      ≥1 offer to prove.
+- [x] ~~`config/portals.yml`'s tracked companies are mostly stale/wrong.~~ **Resolved
+      2026-08-26:** swapped to confirmed-live Lever boards (PointClickCare, Analytic
+      Partners); `title_filter` broadened from Intern/Stage to Data/Analyst/Scientist/
+      Engineer; `target_locations` global override added to `candidate-profile.yml`
+      (was silently deriving to France/Paris from placeholder city/country). 19 real
+      postings found in the next run.
+- [x] ~~Phase 2's true multi-offer batching (N > 1 live postings, one prompt) is still
+      unproven in production.~~ **Resolved 2026-08-26:** 17 live offers, one batch
+      call, real distinct scores (0.3–7.5) returned and written to
+      `evaluations.jsonl`.
+- [x] ~~`config/cv.md` is still not committed and has never been exercised by a cloud
+      run.~~ **Resolved 2026-08-26:** force-committed (same rationale as Decision #22
+      — Alice Martin placeholder data, no real PII) and confirmed read correctly by
+      Phase 2 in the cloud during the same run that proved multi-offer batching.
 - [ ] **`google-service-account.json`'s full key contents were pasted into this chat's
       history during setup.** Recommend rotating (delete + regenerate) the key in Google
       Cloud Console as routine hygiene once active iteration on Phase 3 settles down.
@@ -513,6 +571,17 @@ extensively during today's debugging without any budget concern.
       type "Plain." Deliberate simplification for the POC, not a bug. Upgrading to real
       HTML formatting would need either a Markdown→HTML formatter step added to the Zap,
       or having `digest/index.mjs` render HTML directly instead of Markdown.
+- [ ] **Non-Lever platforms (Greenhouse, Ashby, Workday) still use Playwright for Phase
+      2 body-fetching, unproven in the cloud sandbox.** Only Lever got the plain-API fix
+      (Decision #23) since that's 100% of current `portals.yml`. If Greenhouse/Ashby
+      companies get added later, they'll likely hit the same
+      `net::ERR_TUNNEL_CONNECTION_FAILED` wall and need the same treatment — both
+      already expose full body text via their own public APIs in `src/scan/ats/`
+      (confirmed: `fetchGreenhouse`, `fetchAshby` both map a `body` field the same way
+      `fetchLever` does), so the same fix pattern applies directly. Workday is a
+      separate, harder problem — its listing API doesn't return job descriptions at
+      all, and per-posting detail-fetch is explicitly unimplemented (`fetchOfferBody`
+      in `src/scan/`: "Workday detail-fetch not implemented").
 - [ ] **The cloud Environment's network allowlist only covers Lever + Google APIs.**
       Adding Ashby companies to `portals.yml` will need `api.ashbyhq.com` added to the
       Custom allowlist; adding Workday companies will need each company's own
@@ -540,10 +609,11 @@ extensively during today's debugging without any budget concern.
 - [ ] **Cover-letter generation isn't wired into `index.mjs` yet.** `cover-letter.mjs`'s
       `renderLatex()` exists and is real, but calling it from Phase 4 hasn't been done —
       `cover_letter_upload`/`cover_letter_text` fields currently route to manual review.
-- [ ] **Only tested on one ATS (Lever), one company.** Everything platform-specific in
-      today's fixes (the location field's structure, in particular) is Lever-shaped and
-      unverified elsewhere — Greenhouse, Ashby, and Workday each implement custom
-      widgets differently and will likely need their own handling, not a shared guess.
+- [ ] **Only tested on one ATS (Lever), one company (Phase 4).** Everything
+      platform-specific in the Phase 4 fixes (the location field's structure, in
+      particular) is Lever-shaped and unverified elsewhere — Greenhouse, Ashby, and
+      Workday each implement custom widgets differently and will likely need their own
+      handling, not a shared guess.
 - [ ] **Workday step-detection conflict.** `step-detect.mjs` contains real, Workday-shaped
       step signatures, but the README explicitly says "`/apply` support not yet
       implemented" for Workday. Don't assume Workday applications work until this is
@@ -556,15 +626,18 @@ extensively during today's debugging without any budget concern.
       needs confirming before assuming it's required.
 - [ ] **`config/cv.md` and `config/candidate-profile.yml`'s personal fields are still
       templates.** Real data needed before either phase produces meaningful output for
-      you specifically. (`cv.md` currently holds the repo's own French-student example,
-      used today only as throwaway test data — never assumed real.)
+      you specifically. (Both currently hold the repo's own Alice Martin French-student
+      example, used through 2026-08-26 only as throwaway test data — never assumed
+      real. This is why every score from the 2026-08-26 run was low/skip — expected,
+      not a bug.)
 - [ ] Confirm Claude Code Routines' daily run cap (5/day on Pro, shared across the whole
       account, confirmed — see Section 8) stays comfortable once both Routines run
       daily plus normal interactive Claude Code development usage.
 - [ ] **Real per-call cost is now measured, not estimated: $0.11 for one offer, cache
       miss** (first call ever, nothing to read from cache). Still need a same-day repeat
       run to see the `cache_read` number and get a real repeat-call cost, not just the
-      first-call cost.
+      first-call cost. The 2026-08-26 batch call (17 offers, one call) is a second real
+      cost data point worth pulling from that run's logged `[usage]` line next session.
 
 ---
 
