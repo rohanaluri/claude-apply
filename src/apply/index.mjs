@@ -66,6 +66,15 @@ const NAV_SETTLE_MS = 1200;
 const CAPTCHA_POLL_MS = 3000;
 const CAPTCHA_MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes
 
+// Hard cap on any single field's fill attempt. Without this, a widget that
+// behaves unexpectedly (e.g. a custom dropdown whose structure doesn't match
+// what fillSimple()'s React-Select handling expects) can leave an awaited
+// Playwright call hanging indefinitely — neither resolving nor throwing —
+// which looks identical to the whole script being stuck. A timeout guarantees
+// every field either succeeds or gets flagged for review within a bounded
+// time, so the run always keeps moving.
+const FIELD_TIMEOUT_MS = 8000;
+
 /**
  * Anything matching these is a SUBMIT and must never be auto-clicked.
  * Checked BEFORE the next-patterns, so "Submit" always wins a tie.
@@ -99,7 +108,24 @@ const CLOSED_PATTERNS = [
   /job expired/i,
 ];
 
-const CAPTCHA_PATTERNS = [/captcha/i, /verify you are human/i, /cloudflare/i, /challenge/i];
+/**
+ * Text signals for an ACTIVE captcha challenge.
+ *
+ * Deliberately narrow. Broad terms like /captcha/, /cloudflare/ or /challenge/
+ * match routine boilerplate that appears on pages with no active challenge at
+ * all — Lever footers every apply page with "This site is protected by hCaptcha
+ * and its Privacy Policy and Terms of Service apply", and job descriptions
+ * constantly use the word "challenge". Those matches produced false positives
+ * that stalled the run. Match only phrasing that appears when the user is
+ * actually being asked to prove they're human.
+ */
+const CAPTCHA_PATTERNS = [
+  /verify (that )?you are (a )?human/i,
+  /i am not a robot/i,
+  /checking your browser before accessing/i,
+  /please complete the (security |captcha )?(check|challenge) (to|before)/i,
+  /attention required!\s*\|\s*cloudflare/i,
+];
 
 /** classKeys that must be answered by AI rather than the profile. */
 const AI_KEYS = new Set(['free_text', 'cover_letter_text']);
@@ -111,6 +137,44 @@ const UPLOAD_KEYS = new Set([
   'transcript_upload',
   'portfolio_upload',
   'other_upload',
+]);
+
+/**
+ * classKeys that can never legitimately describe a radio-group. A radio-group
+ * is always a yes/no or multiple-choice question — it can't literally BE "the
+ * email field." These classes only exist because classifyField() is being
+ * fed the radio-group's FULL question paragraph (up to 300 chars, via
+ * questionTextOf() in the scan script), not just a short label — and a
+ * generic keyword regex meant for short field labels can match an incidental
+ * word buried deep in a long explanatory sentence (e.g. a consent question
+ * that happens to mention "email" in passing got misclassified as the email
+ * field itself). Guards against that whole class of false positive rather
+ * than patching each one as it's found.
+ */
+const RADIO_INVALID_KEYS = new Set([
+  'email',
+  'phone',
+  'linkedin',
+  'github',
+  'website',
+  'full_name',
+  'first_name',
+  'last_name',
+  'education_school',
+  'education_degree',
+  'education_field',
+  'education_start',
+  'education_end',
+  'graduation_year',
+  'experience_company',
+  'experience_title',
+  'experience_start',
+  'experience_end',
+  'experience_summary',
+  'availability',
+  'free_text',
+  'cover_letter_text',
+  ...UPLOAD_KEYS,
 ]);
 
 // ────────────────────────────────────────────────── pure helpers (tested) ────
@@ -286,7 +350,10 @@ export function planFields(fields, profile) {
       }
     }
 
-    const classKey = classifyField({ ...f, label: labelForClass });
+    let classKey = classifyField({ ...f, label: labelForClass });
+    if (f.kind === 'radio-group' && RADIO_INVALID_KEYS.has(classKey)) {
+      classKey = 'unknown';
+    }
 
     if (UPLOAD_KEYS.has(classKey)) {
       return {
@@ -395,7 +462,10 @@ async function expandSections(page, profile, log) {
       await page.click(`[data-ca-btn="${b.idx}"]`).catch(() => {});
       await page.waitForTimeout(250);
     }
-    if (n > 1) log.push(`expanded section "${section}" (${n - 1} extra click(s))`);
+    if (n > 1) {
+      log.push(`expanded section "${section}" (${n - 1} extra click(s))`);
+      console.error(`  → expanded "${section}" section (+${n - 1})`);
+    }
   }
 }
 
@@ -403,9 +473,21 @@ async function fillSimple(page, field, value) {
   const sel = `[data-ca-idx="${field.idx}"]`;
 
   if (field.tag === 'select' && !field.isReactSelect) {
-    await page.selectOption(sel, { label: String(value) }).catch(async () => {
-      await page.selectOption(sel, String(value));
-    });
+    // Check for a REAL matching option before attempting to select it.
+    // page.selectOption() doesn't fail fast when nothing matches — it quietly
+    // retries internally for its own timeout (default ~30s), which is what
+    // caused fields with a bad/mismatched value (e.g. a misclassified field
+    // fed a date instead of a country, or an EEO default like "Prefer not to
+    // say" that doesn't match this site's actual "Decline to self-identify"
+    // wording) to look like a hang. Checking first means a genuine mismatch
+    // fails in milliseconds, with a clear reason, instead of stalling.
+    const desired = String(value).trim().toLowerCase();
+    const optionTexts = await page
+      .locator(sel)
+      .evaluate((el) => Array.from(el.options).map((o) => o.textContent.trim()));
+    const matchIdx = optionTexts.findIndex((o) => o.trim().toLowerCase() === desired);
+    if (matchIdx === -1) return false;
+    await page.selectOption(sel, { label: optionTexts[matchIdx] });
     return true;
   }
 
@@ -488,21 +570,48 @@ async function fillLocationAutocomplete(page, field, value) {
  * Captcha detection checks for REAL captcha DOM elements (iframes/widgets from
  * known vendors), not just page text — a visible hCaptcha/reCAPTCHA/Turnstile
  * widget often doesn't put the literal word "captcha" anywhere in the page's
- * visible text, so a text-only check can miss it. The CAPTCHA_PATTERNS text
- * check is kept as a secondary signal (e.g. explicit "Verify you are human"
- * copy some sites show).
+ * visible text, so a text-only check can miss it.
+ *
+ * Both signals are deliberately narrow, because a false positive here is
+ * expensive: it stalls the run for the full CAPTCHA_MAX_WAIT_MS waiting on a
+ * challenge that was never there. Specifically:
+ *   - the widget must be VISIBLE (real rendered size), since Lever and others
+ *     embed a dormant/invisible captcha widget on every page for passive
+ *     bot-scoring;
+ *   - the text patterns match active-challenge phrasing only, never the
+ *     "protected by hCaptcha" boilerplate that footers every Lever page.
  */
 async function detectBlockers(page) {
   const info = await page.evaluate(`(() => ({
     text: (document.body.innerText || '').slice(0, 20000),
     hasPassword: !!document.querySelector('input[type="password"]'),
     hasFile: !!document.querySelector('input[type="file"]'),
-    hasCaptchaWidget: !!document.querySelector(
-      'iframe[src*="hcaptcha"], iframe[title*="hcaptcha" i], ' +
-      'iframe[src*="recaptcha"], iframe[title*="recaptcha" i], ' +
-      'iframe[src*="turnstile"], div[class*="cf-turnstile"], ' +
-      'div.h-captcha, div.g-recaptcha'
-    ),
+    // Many sites (Lever included) embed an invisible/background captcha widget
+    // on every page load for passive bot-scoring — that's normal and NOT
+    // something to pause for. Only a widget that's actually VISIBLE on screen
+    // (real rendered size, not display:none/visibility:hidden) represents a
+    // real challenge the user needs to solve.
+    hasCaptchaWidget: (() => {
+      const els = document.querySelectorAll(
+        'iframe[src*="hcaptcha"], iframe[title*="hcaptcha" i], ' +
+        'iframe[src*="recaptcha"], iframe[title*="recaptcha" i], ' +
+        'iframe[src*="turnstile"], div[class*="cf-turnstile"], ' +
+        'div.h-captcha, div.g-recaptcha'
+      );
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        if (
+          r.width > 10 &&
+          r.height > 10 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden'
+        ) {
+          return true;
+        }
+      }
+      return false;
+    })(),
   }))()`);
 
   if (CLOSED_PATTERNS.some((r) => r.test(info.text))) return { blocker: 'closed_offer' };
@@ -535,8 +644,16 @@ async function waitOutCaptcha(page, log) {
 
   const start = Date.now();
   while (Date.now() - start < CAPTCHA_MAX_WAIT_MS) {
-    await page.waitForTimeout(CAPTCHA_POLL_MS);
-    const check = await detectBlockers(page);
+    let check;
+    try {
+      await page.waitForTimeout(CAPTCHA_POLL_MS);
+      check = await detectBlockers(page);
+    } catch (e) {
+      // Page/tab/browser closed while we were waiting — nothing left to poll.
+      console.error('✖  Browser tab closed while waiting on the captcha — stopping.\n');
+      log.push(`captcha wait aborted: ${e.message}`);
+      return { blocker: 'captcha', pageGone: true };
+    }
     if (check.blocker !== 'captcha') {
       const waitedSec = Math.round((Date.now() - start) / 1000);
       console.error('▶  Captcha cleared — resuming.\n');
@@ -548,6 +665,42 @@ async function waitOutCaptcha(page, log) {
   console.error('✖  Captcha still present after the wait limit — stopping.\n');
   log.push(`captcha not resolved within ${Math.round(CAPTCHA_MAX_WAIT_MS / 60000)}min — stopping`);
   return { blocker: 'captcha', timedOut: true };
+}
+
+/**
+ * Prints one line the instant a field is resolved, so the terminal shows real
+ * progress instead of going silent until the final summary. A quiet run and a
+ * hung run look identical without this — every fill/skip decision happens in
+ * memory and previously wasn't visible until the very end.
+ */
+function logFieldResult(p) {
+  const label = (p.label || p.questionText || p.classKey || '').slice(0, 40);
+  if (p.action === 'review') {
+    console.error(`  [review] ✗ ${p.classKey.padEnd(16)} ${label} — ${p.reason}`);
+    return;
+  }
+  const tag =
+    { fill: 'fill', radio: 'radio', location: 'locate', upload: 'upload', 'filled-ai': 'ai' }[
+      p.action
+    ] || p.action;
+  const shown = String(p.value ?? '').slice(0, 50);
+  console.error(`  [${tag}]${' '.repeat(Math.max(0, 7 - tag.length))} ✓ ${p.classKey.padEnd(16)} → ${shown}`);
+}
+
+/**
+ * Races `promise` against FIELD_TIMEOUT_MS. If the timeout wins, throws a
+ * distinct, clearly-labeled error instead of leaving the caller hanging.
+ * The underlying Playwright call may still be running in the background when
+ * this returns (it isn't cancelled) — but the run itself is never blocked by
+ * it, which is what matters for keeping the script moving.
+ */
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`timed out after ${ms}ms (${label})`)), ms)
+    ),
+  ]);
 }
 
 async function findNavButtons(page) {
@@ -664,9 +817,11 @@ async function main() {
     process.exit(1);
   }
   const cvMd = fs.existsSync('config/cv.md') ? fs.readFileSync('config/cv.md', 'utf8') : '';
+  console.error('✓ profile + cv.md loaded');
 
   // --- browser ---
   const cdpUrl = `http://localhost:${args.port}`;
+  console.error(`→ connecting to Chrome DevTools at ${cdpUrl}...`);
   let browser;
   try {
     browser = await chromium.connectOverCDP(cdpUrl);
@@ -676,6 +831,7 @@ async function main() {
     );
     process.exit(1);
   }
+  console.error('✓ connected to Chrome');
 
   const ctx = browser.contexts()[0];
   const page = await ctx.newPage();
@@ -684,17 +840,25 @@ async function main() {
   let role = null;
   let language = null;
 
+  // Runs waitOutCaptcha() and, if a blocker remains, records finalStatus/errors
+  // and returns true so the caller can `return` immediately. Centralizes the
+  // stop-and-report logic used at every checkpoint below.
+  const stopIfBlocked = async (context) => {
+    const r = await waitOutCaptcha(page, log);
+    if (!r.blocker) return false;
+    finalStatus = r.blocker === 'closed_offer' ? 'Discarded' : 'Failed';
+    console.error(`✖ Blocked (${context}): ${r.blocker}. Resolve it in the browser, then re-run.`);
+    errors.push(`${context}: ${r.blocker}`);
+    return true;
+  };
+
   try {
+    console.error(`→ opening ${args.url} ...`);
     await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(NAV_SETTLE_MS);
+    console.error('✓ page loaded, checking for blockers...');
 
-    const { blocker } = await waitOutCaptcha(page, log);
-    if (blocker) {
-      finalStatus = blocker === 'closed_offer' ? 'Discarded' : 'Failed';
-      console.error(`✖ Blocked: ${blocker}. Resolve it in the browser, then re-run.`);
-      errors.push(blocker);
-      return;
-    }
+    if (await stopIfBlocked('initial load')) return;
 
     // --- job metadata ---
     const meta = await page.evaluate(`(() => ({
@@ -715,26 +879,21 @@ async function main() {
     company = titleParts.length > 1 ? titleParts[0] : null;
     language = detectLanguage({ title: role, description: meta.body });
     log.push(`role="${role}" company="${company}" language=${language}`);
+    console.error(`Detected: company="${company ?? '—'}"  role="${role ?? '—'}"  language=${language}`);
 
     let aiCallsUsed = 0;
     const allPlans = [];
 
     for (let step = 1; step <= MAX_STEPS; step++) {
-      // Re-check at the start of every step — catches a captcha that appeared
-      // between steps (e.g. on the page that just loaded), before any typing
-      // happens on it.
-      if (!args.dryRun) {
-        const stepCheck = await waitOutCaptcha(page, log);
-        if (stepCheck.blocker) {
-          finalStatus = stepCheck.blocker === 'closed_offer' ? 'Discarded' : 'Failed';
-          console.error(
-            `✖ Blocked at step ${step}: ${stepCheck.blocker}. Resolve it in the browser, then re-run.`
-          );
-          errors.push(`step ${step}: ${stepCheck.blocker}`);
-          return;
-        }
+      // Re-check at the start of each step after the first — catches a captcha
+      // that appeared on a newly-advanced page, before any typing happens on
+      // it. Skipped on step 1 because main() ran the identical check moments
+      // earlier, right after page.goto().
+      if (!args.dryRun && step > 1) {
+        if (await stopIfBlocked(`step ${step} start`)) return;
       }
 
+      if (!args.dryRun) console.error(`\n── step ${step}: scanning page ──`);
       await expandSections(page, profile, log);
 
       const raw = await scanPage(page);
@@ -743,6 +902,7 @@ async function main() {
       allPlans.push(...plan);
 
       log.push(`step ${step}: ${plan.length} fields`);
+      if (!args.dryRun) console.error(`\n── step ${step}: ${plan.length} field(s) found, filling now ──`);
 
       if (args.dryRun) {
         console.log(`\n── step ${step} (dry-run, nothing filled) ──`);
@@ -756,26 +916,45 @@ async function main() {
         for (const p of plan) {
           try {
             if (p.action === 'fill') {
-              const ok = await fillSimple(page, p, p.value);
+              const ok = await withTimeout(
+                fillSimple(page, p, p.value),
+                FIELD_TIMEOUT_MS,
+                p.classKey
+              );
               if (!ok) {
                 p.action = 'review';
-                p.reason = 'fill verification failed';
+                p.reason =
+                  p.tag === 'select'
+                    ? `no option matches "${p.value}"`
+                    : 'fill verification failed';
               }
             } else if (p.action === 'radio') {
-              const ok = await fillRadio(page, p, p.value);
+              const ok = await withTimeout(
+                fillRadio(page, p, p.value),
+                FIELD_TIMEOUT_MS,
+                p.classKey
+              );
               if (!ok) {
                 p.action = 'review';
                 p.reason = 'radio click not confirmed';
               }
             } else if (p.action === 'location') {
-              const ok = await fillLocationAutocomplete(page, p, p.value);
+              const ok = await withTimeout(
+                fillLocationAutocomplete(page, p, p.value),
+                FIELD_TIMEOUT_MS,
+                p.classKey
+              );
               if (!ok) {
                 p.action = 'review';
                 p.reason = 'location autocomplete: no value confirmed after typing + selecting';
               }
             } else if (p.action === 'upload') {
               if (p.value && fs.existsSync(p.value)) {
-                await page.locator(`[data-ca-idx="${p.idx}"]`).setInputFiles(path.resolve(p.value));
+                await withTimeout(
+                  page.locator(`[data-ca-idx="${p.idx}"]`).setInputFiles(path.resolve(p.value)),
+                  FIELD_TIMEOUT_MS,
+                  p.classKey
+                );
               } else {
                 p.action = 'review';
                 p.reason = `file not found: ${p.value}`;
@@ -786,6 +965,17 @@ async function main() {
             p.reason = `error: ${e.message}`;
             errors.push(`${p.classKey}: ${e.message}`);
           }
+
+          // AI-answered fields aren't touched here — they're filled after the
+          // batched Claude call below, where they get logged for real. Logging
+          // them here printed a premature, empty line before any answer existed.
+          if (p.action !== 'ai') logFieldResult(p);
+
+          // Check after EVERY field, not just once per step. hCaptcha can
+          // trigger reactively mid-burst — a single per-step check can land
+          // right after a challenge already appeared AND cleared between two
+          // checks, missing it entirely even though it was genuinely there.
+          if (await stopIfBlocked(`step ${step}, field "${p.classKey}"`)) return;
         }
 
         // 2. ONE batched AI call for this step's free-text questions
@@ -797,6 +987,7 @@ async function main() {
               p.reason = 'AI call budget exhausted';
             });
             log.push(`skipped ${aiFields.length} AI field(s): budget exhausted`);
+            console.error(`  [review] ✗ ${aiFields.length} free-text field(s) skipped — AI call budget exhausted`);
           } else {
             const questions = aiFields.map((p, i) => ({
               id: `q${p.idx}`,
@@ -811,6 +1002,9 @@ async function main() {
               cvMd,
               questions,
             });
+            console.error(
+              `\n  → calling Claude for ${aiFields.length} free-text question(s) (this can take 10-30s)...`
+            );
             try {
               const { text, usage } = runClaudeBatch(prompt);
               aiCallsUsed++;
@@ -819,63 +1013,65 @@ async function main() {
               log.push(
                 `AI call ${aiCallsUsed}: ${aiFields.length} question(s), usage=${JSON.stringify(usage)}`
               );
+              console.error(
+                `  ✓ AI responded (usage=${JSON.stringify(usage)})${parseError ? ' — WARNING: response was not valid JSON' : ''}`
+              );
               for (const p of aiFields) {
                 const ans = answers[`q${p.idx}`];
                 if (ans && String(ans).trim()) {
-                  const ok = await fillSimple(page, p, ans);
+                  const ok = await withTimeout(fillSimple(page, p, ans), FIELD_TIMEOUT_MS, p.classKey);
                   p.action = ok ? 'filled-ai' : 'review';
                   if (!ok) p.reason = 'AI answer fill failed';
+                  else p.value = ans;
                 } else {
                   p.action = 'review';
                   p.reason = 'AI returned no answer';
                 }
+                logFieldResult(p);
+                // Same per-field check as the deterministic-fill loop above —
+                // AI answers also involve real typing/DOM interaction, so the
+                // same reactive-trigger risk applies here.
+                if (await stopIfBlocked(`step ${step}, AI field "${p.classKey}"`)) return;
               }
             } catch (e) {
+              console.error(`  ✗ AI call failed: ${e.message}`);
               aiFields.forEach((p) => {
                 p.action = 'review';
                 p.reason = `AI call failed: ${e.message}`;
+                logFieldResult(p);
               });
               errors.push(`AI call failed: ${e.message}`);
             }
           }
         }
-
-        // Re-check again after this step's fill actions — this is the case that
-        // actually matters most: hCaptcha and similar can trigger reactively
-        // based on interaction patterns partway through filling, not just on
-        // load. Catching it here means we pause and resume cleanly instead of
-        // silently hanging on whatever the script tries next.
-        const postFillCheck = await waitOutCaptcha(page, log);
-        if (postFillCheck.blocker) {
-          finalStatus = postFillCheck.blocker === 'closed_offer' ? 'Discarded' : 'Failed';
-          console.error(
-            `✖ Blocked mid-step ${step}: ${postFillCheck.blocker}. Resolve it in the browser, then re-run.`
-          );
-          errors.push(`step ${step} post-fill: ${postFillCheck.blocker}`);
-          return;
-        }
       }
 
       // 3. navigation: advance only on a confirmed NEXT, never a submit
+      console.error(`  → checking for Next/Submit buttons...`);
       const navs = await findNavButtons(page);
       const submitBtn = navs.find((b) => classifyButton(b.text) === 'submit');
       const nextBtn = navs.find((b) => classifyButton(b.text) === 'next' && !b.disabled);
 
       if (submitBtn && !nextBtn) {
-        log.push(
-          `step ${step}: submit button found ("${submitBtn.text}") — stopping for human review`
-        );
+        const msg = `step ${step}: submit button found ("${submitBtn.text}") — stopping for human review`;
+        log.push(msg);
+        console.error(`  ✓ ${msg}`);
         break;
       }
       if (!nextBtn) {
-        log.push(`step ${step}: no next button — assuming final page`);
+        const msg = `step ${step}: no next button — assuming final page`;
+        log.push(msg);
+        console.error(`  ✓ ${msg}`);
         break;
       }
       if (step === MAX_STEPS) {
-        log.push(`reached MAX_STEPS (${MAX_STEPS}) — stopping`);
+        const msg = `reached MAX_STEPS (${MAX_STEPS}) — stopping`;
+        log.push(msg);
+        console.error(`  ✓ ${msg}`);
         break;
       }
 
+      console.error(`  → clicking "${nextBtn.text}"...`);
       const beforeUrl = page.url();
       const beforeCount = (await scanPage(page)).length;
       await page
@@ -886,10 +1082,14 @@ async function main() {
       const afterUrl = page.url();
       const afterCount = (await scanPage(page)).length;
       if (afterUrl === beforeUrl && afterCount === beforeCount) {
-        log.push(`step ${step}: page did not advance after "${nextBtn.text}" — stopping`);
+        const msg = `step ${step}: page did not advance after "${nextBtn.text}" — stopping`;
+        log.push(msg);
+        console.error(`  ✗ ${msg}`);
         break;
       }
-      log.push(`step ${step}: advanced via "${nextBtn.text}"`);
+      const msg = `step ${step}: advanced via "${nextBtn.text}"`;
+      log.push(msg);
+      console.error(`  ✓ ${msg}`);
     }
 
     // --- tripwire ---

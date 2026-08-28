@@ -167,11 +167,20 @@ const RULES = [
   },
   {
     key: 'experience_start',
-    when: (f) => test_norm(/start date|date de debut|start.*(work|job)/, f.label, f.name),
+    // Word-boundary fix: bare "start.*(work|job)" matched words like
+    // "jumpstart" as a false positive substring match. \bstart\b requires
+    // "start" as its own word.
+    when: (f) => test_norm(/start date|date de debut|\bstart\b.*(work|job)/, f.label, f.name),
   },
   {
     key: 'experience_end',
-    when: (f) => test_norm(/end date|date de fin|end.*(work|job)/, f.label, f.name),
+    // Word-boundary fix (2026-08-27, live test on Epoch AI Lever posting):
+    // bare "end.*(work|job)" matched "Which country do you intend to
+    // primarily work from?" — "end" is a substring of "intend", and "work"
+    // appears later in the same sentence, so the unanchored regex matched
+    // across word boundaries by accident. \bend\b requires "end" as its own
+    // standalone word, not embedded inside a longer word like "intend".
+    when: (f) => test_norm(/end date|date de fin|\bend\b.*(work|job)/, f.label, f.name),
   },
   {
     key: 'experience_summary',

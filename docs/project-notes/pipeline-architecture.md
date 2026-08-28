@@ -1,7 +1,7 @@
 # Job Application Pipeline — Architecture
 
 Base repo: https://github.com/LeoLaborie/claude-apply (forked to `rohanaluri/claude-apply`, private)
-Orchestration: Claude Code Routines (cloud, Anthropic-managed)
+Orchestration: Claude Code Routines (cloud, Anthropic-managed) for Phases 1-3
 Local execution environment: WSL2 (Ubuntu) on a Windows host
 Notification: Google Sheets (Sheets API write) → Zapier (New Spreadsheet Row trigger) → Gmail
 
@@ -60,11 +60,41 @@ repeating it.
 23. Phase 2 fetches Lever job bodies via Lever's public API (plain `fetch()`), not
     Playwright — the cloud Routine's sandbox proxy blocks real browser navigation
     entirely (`net::ERR_TUNNEL_CONNECTION_FAILED`), a known Claude Code sandbox
-    limitation, not a fixable config issue. Two supporting fixes were needed first
-    (`executablePath` pointed at the sandbox's pre-installed browser symlink,
-    `channel: 'chromium'` to avoid needing the separate, not-installed headless-shell
-    build) before the real wall was found. Playwright remains the fallback for
+    limitation, not a fixable config issue. Playwright remains the fallback for
     non-Lever platforms — see Section 4.
+24. **Phase 4's daily-use entry point is a direct terminal command (`capply`), not the
+    `/apply` Claude Code slash command.** Every failure hit while testing `/apply` live
+    (2026-08-27) traced back to Claude Code's own permission/tool-call layer — rejected
+    prompts, silently-denied tool calls, one harness-level "internal error" — never the
+    underlying script. `capply` (a one-line `~/.bashrc` function, see Section 1) runs
+    `node src/apply/index.mjs` directly, with zero permission dialog in the path.
+    `.claude/commands/apply.md` still exists and still works, but is no longer the
+    documented way to run this day to day.
+25. **Phase 4's captcha handling is pause-and-auto-resume, not detect-and-exit.**
+    `waitOutCaptcha()` pauses the run, prints a clear message, polls every 3s until the
+    challenge clears (10 min max), then continues on its own — no manual restart.
+    Checked once per **field**, not per step, since hCaptcha triggers reactively partway
+    through a burst of fills; a coarser check can miss a challenge that appeared and
+    cleared entirely between two check points. Detection needed two rounds of tuning
+    after live testing — see Section 6 for the false-positive history.
+26. **Every field-fill attempt has an 8-second hard timeout (`FIELD_TIMEOUT_MS`).**
+    Playwright's `selectOption()` does not fail fast when no option matches — it retries
+    internally for ~30s, indistinguishable from the script being stuck. The fast-fail
+    fix in Decision #27 resolves the known cases in milliseconds; the timeout remains as
+    a general safety net for any future field that hangs for a reason not yet seen.
+27. **Three field-handling bugs found via the first real full-form live test (Epoch AI,
+    2026-08-27), all fixed:**
+    - `experience_end`'s regex (`end.*(work|job)`) had no word boundary, so it matched
+      "end" inside "int**end**" — "Which country do you **intend** to primarily **work**
+      from?" was misclassified as a job end-date field. Fixed with `\bend\b` (and
+      `\bstart\b` preventatively).
+    - Personal-data classKeys were matching a radio-group's FULL question paragraph (up
+      to 300 chars), not a short label — a Yes/No consent question mentioning "email" in
+      passing became the email field. Fixed with a `RADIO_INVALID_KEYS` guard in
+      `planFields()`; guards the whole class of long-paragraph false positives.
+    - `fillSimple()`'s plain-`<select>` branch now checks for a real matching option
+      BEFORE calling `selectOption()` — fails in milliseconds with a specific
+      `no option matches "X"` reason instead of stalling.
 
 ---
 
@@ -83,64 +113,68 @@ via `apt` — fully separate from Windows Chrome.
 `~/.bashrc`:
 
 ```bash
-alias chrome-apply='"/usr/bin/google-chrome" --user-data-dir="/home/rohan/.config/google-chrome-claude-apply" --remote-debugging-port=9222 &'
+alias chrome-apply='"/usr/bin/google-chrome" --user-data-dir="/home/rohan/.config/google-chrome-claude-apply" --remote-debugging-port=9222 --disable-gpu --disable-software-rasterizer 2>/dev/null &'
 ```
 
+**`--disable-gpu --disable-software-rasterizer 2>/dev/null` added 2026-08-27.** WSL2 has
+no GPU hardware acceleration by default, so Chrome retried and failed WebGL rendering in
+a loop, flooding the terminal with `ContextResult::kFatalFailure: WebGL1/WebGL2
+blocklisted` and burying real script output — looked exactly like a hang, wasn't one.
+**Gotcha:** editing this alias does NOT affect an already-running Chrome under the same
+`--user-data-dir` — Chrome opens a new window in the existing process and ignores the new
+flags. Kill it first:
+`pkill -f "user-data-dir=/home/rohan/.config/google-chrome-claude-apply"`, confirm with
+`ps aux | grep remote-debugging-port`, then relaunch.
+
 Signed into the job-search Gmail account. `claude-in-chrome` extension installed in this
-profile per the repo's setup instructions (its exact role alongside the redesigned,
-code-driven Phase 4 below is still unconfirmed — see Open Items).
+profile (its role is now unclear — see Open Items).
+
+**`capply` — the real daily-use entry point (added 2026-08-27, Decision #24):**
+
+```bash
+capply() { (cd ~/claude-apply && node src/apply/index.mjs "$1"); }
+```
+
+Daily use is now `capply "<job-url>"`. Runs Phase 4 directly, bypassing Claude Code's
+permission layer entirely. **Consequence: the terminal is now the sole record of a run** —
+no Claude Code session transcript to review afterward — which is why live per-field
+logging was added the same day (Section 6).
 
 **GitHub auth:** `gh auth login`, browser OAuth, against the private fork.
 
-**Claude Code:** installed natively inside Ubuntu, separate from any Windows-side install.
+**Claude Code:** still used for development/editing work in this project — just no longer
+how Phase 4 gets invoked day to day (Decision #24).
 
-**Playwright's headless Chrome (separate from `chrome-apply`):** Phase 2's scoring step
-uses `playwright`'s own headless Chromium to fetch job posting pages for non-Lever
-platforms (Lever now uses a plain API call instead — see Decision #23 and Section 4).
-This is a **completely separate browser install** from the CDP-controlled Chrome
-`chrome-apply` launches for Phase 4. Installed via `npx playwright install chromium`.
-Hit a real, current compatibility gap: Playwright does not yet officially support Ubuntu
-26.04 (confirmed via Microsoft's own issue tracker — other users hitting the identical
-error at the same time). Fixed with the documented workaround, telling Playwright to use
-its Ubuntu 24.04 build instead:
+**Playwright's headless Chrome (separate from `chrome-apply`):** used by Phase 2 for
+non-Lever platforms only (Lever now uses a plain API call — Decision #23). Completely
+separate browser install from the CDP-controlled Chrome. Ubuntu 26.04 isn't officially
+supported by Playwright yet; workaround:
 
 ```bash
-export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64   # add to ~/.bashrc — needed at runtime, not just install
+export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64   # in ~/.bashrc — needed at runtime, not just install
 npx playwright install chromium
 ```
 
 **What doesn't run here:** Phases 1-3 run in the cloud Routine, cloning the repo fresh
-each run (see Section 8). This environment is specifically for Phase 4.
+each run (Section 8). This environment is specifically for Phase 4.
 
-### 1a. File paths reference (for moving files between Windows, WSL2, and the repo)
+### 1a. File paths reference
 
-All local terminal work in this project has used a **WSL2 Ubuntu bash** shell (prompt
-shape: `rohan@Rohans-PC:~/claude-apply$`) — not native Windows PowerShell. This section
-exists so file-move commands (e.g. "copy a file Claude generated into the repo") are
-always given in the right shell with the right path style.
+All local terminal work uses **WSL2 Ubuntu bash** (prompt: `rohan@Rohans-PC:~/claude-apply$`).
 
 | What | WSL2 path (bash) | Windows path (native) |
 | --- | --- | --- |
 | Windows Downloads folder | `/mnt/c/Users/rohan/Downloads/` | `C:\Users\rohan\Downloads\` |
-| Repo root | `/home/rohan/claude-apply` (equivalently `~/claude-apply`) | `\\wsl$\Ubuntu\home\rohan\claude-apply` |
+| Repo root | `/home/rohan/claude-apply` (`~/claude-apply`) | `\\wsl$\Ubuntu\home\rohan\claude-apply` |
 | Config dir | `~/claude-apply/config/` | `\\wsl$\Ubuntu\home\rohan\claude-apply\config` |
 | Google service-account key (never committed) | `~/claude-apply/config/google-service-account.json` | — |
 
-**Standard pattern used throughout this project** — a file downloaded from Claude's chat
-UI lands in the Windows Downloads folder, then gets copied into the repo from a WSL2 bash
-terminal (note the `/mnt/c/...` prefix, which is how WSL2 mounts the Windows `C:` drive):
+**Standard file-transfer pattern used throughout this project:**
 
 ```bash
+md5sum /mnt/c/Users/rohan/Downloads/<filename>
 cp /mnt/c/Users/rohan/Downloads/<filename> ~/claude-apply/<destination path>
-```
-
-**PowerShell equivalent** (for reference only — not the pattern actually used in this
-project; only relevant if a future session runs commands directly in Windows PowerShell
-instead of WSL2 bash), using PowerShell's `\\wsl$` UNC path to reach into the WSL2
-filesystem from Windows:
-
-```powershell
-Copy-Item C:\Users\rohan\Downloads\<filename> \\wsl$\Ubuntu\home\rohan\claude-apply\<destination path>
+md5sum ~/claude-apply/<destination path>   # confirm hashes match before committing
 ```
 
 ---
@@ -150,31 +184,43 @@ Copy-Item C:\Users\rohan\Downloads\<filename> \\wsl$\Ubuntu\home\rohan\claude-ap
 ```mermaid
 flowchart TD
     A["Cloud Routine fires<br/>7:00 AM daily, PC off"] --> B["<b>Phase 1 — Discovery & Prefilter</b><br/>cloud, deterministic, $0 AI"]
-    B -->|"node src/scan/index.mjs<br/>reads portals.yml → Greenhouse/Lever/Ashby<br/>title filter: role level"| C[("data/pipeline.md")]
+    B -->|"node src/scan/index.mjs<br/>reads portals.yml → Lever/Greenhouse/Ashby APIs<br/>title + location prefilter"| C[("data/pipeline.md")]
     C --> D["<b>Phase 2 — Batched Scoring</b><br/>cloud, ONE AI call for the whole batch"]
     D -->|"cv.md once + ALL postings<br/>→ array of score + reason"| E[("data/evaluations.jsonl")]
-    E -->|"filter: score ≥ 7 (of 10)"| F["<b>Phase 3 — Digest</b><br/>cloud, $0 AI<br/>writes 1 row/day to Google Sheets"]
-    F -->|"Zapier: New Spreadsheet Row<br/>→ Send Gmail"| G["📧 You review digest<br/>pick a job, paste /apply url"]
-    G --> H["<b>Phase 4 — Local Apply</b><br/>WSL2/Ubuntu, 0–1 AI calls"]
+    E -->|"filter: score ≥ threshold, today only"| F["<b>Phase 3 — Digest</b><br/>cloud, $0 AI<br/>writes 1 row/day to Google Sheets"]
+    F -->|"Zapier: New Spreadsheet Row<br/>→ Send Gmail"| G["📧 You review digest,<br/>pick a job, copy its URL"]
+    G --> T["💻 <b>You open a WSL2 terminal</b><br/>capply &lt;url&gt; · no Claude Code"]
+    T --> H["<b>Phase 4 — Local Apply</b><br/>WSL2/Ubuntu · Playwright over CDP"]
     H --> H1["Step A — scan every field<br/>💲0 AI"]
-    H1 --> H2["Step B — fill known fields<br/>from profile · 💲0 AI"]
+    H1 --> H2["Step B — fill known fields<br/>from profile · 💲0 AI<br/>⏱ 8s timeout per field"]
     H2 --> H3["Step C — 1 AI call<br/>ONLY if a real free-text field exists"]
     H3 --> H4["Step D — upload resume<br/>💲0 AI"]
     H4 --> H5["🛑 Step E — TRIPWIRE<br/>halt · never clicks Submit"]
     H5 --> I["✅ You review, solve CAPTCHA,<br/>click Submit yourself"]
 
+    H2 -.->|"captcha appears mid-fill"| P["⏸ PAUSE · poll every 3s<br/>you solve it in the browser"]
+    P -.->|"auto-resumes, no restart"| H2
+
     classDef free fill:#e0f2e9,stroke:#2f855a,color:#1a1a1a
     classDef ai fill:#e6eefc,stroke:#2b6cb0,color:#1a1a1a
     classDef human fill:#fff7e6,stroke:#c05621,color:#1a1a1a
     classDef tripwire fill:#fde2e1,stroke:#c53030,color:#1a1a1a,font-weight:bold
+    classDef pause fill:#fef3c7,stroke:#b45309,color:#1a1a1a
 
     class B,C,H1,H2,H4 free
     class D,E,H3 ai
-    class A,F,G,I human
+    class A,F,G,I,T human
     class H5 tripwire
+    class P pause
 ```
 
-_Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdown Preview Mermaid Support" extension if it doesn't render in the preview tab shown above._
+_Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdown Preview Mermaid Support" extension if it doesn't render._
+
+**Note the two changes vs. earlier versions of this diagram:** the handoff from digest to
+Phase 4 is now an explicit manual terminal step (`capply`, Decision #24) rather than a
+Claude Code slash command, and the captcha pause/resume loop (Decision #25) is shown as a
+real branch off the fill step, since it's now a normal part of a Lever run rather than a
+failure mode.
 
 ---
 
@@ -183,300 +229,271 @@ _Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdo
 **Command:** `node src/scan/index.mjs`
 
 **Confirmed working end-to-end in the real cloud Routine, with real live postings
-(2026-08-26).** Correctly scans every company in `config/portals.yml`, prefilters by
-title/blacklist/location/date, dedupes against `data/scan-history.tsv`, and appends
-survivors to `data/pipeline.md`.
+(2026-08-26).** Scans every company in `config/portals.yml`, prefilters by
+title/blacklist/location/date, dedupes against `data/scan-history.tsv`, appends survivors
+to `data/pipeline.md`.
 
 **`portals.yml` and `target_locations` fixed 2026-08-26.** Tracked companies swapped to
-confirmed-live Lever boards (PointClickCare, Analytic Partners, alongside Mistral AI —
-which still returns 0, possibly a wrong/empty slug, flagged but not blocking); title
-filter broadened from the original repo's `Intern/Internship/Stage/Stagiaire` to
+confirmed-live Lever boards (PointClickCare, Analytic Partners, plus Mistral AI which
+still returns 0 — possibly a wrong/empty slug, flagged but not blocking). Title filter
+broadened from the original repo's `Intern/Internship/Stage/Stagiaire` to
 `Data/Analyst/Scientist/Engineer`. Separately, `candidate-profile.yml`'s
 `target_locations` was silently deriving to `["France", "Paris", "Remote"]` from the
-placeholder `city`/`country` fields — added an explicit override
-(`Remote, United States, USA`) so real US postings aren't filtered out by location.
-Result: **19 real postings found** in the first run after both fixes (15 PointClickCare,
-4 Analytic Partners).
+placeholder `city`/`country` — added an explicit override (`Remote, United States, USA`)
+so real US postings aren't dropped. Result: **19 real postings found** on the next run.
 
 ---
 
 ## 4. Phase 2 — Batched Scoring (Cloud, 1 AI call per run)
 
-**Status: confirmed working end-to-end in production (2026-08-26).** 19 real postings
-in, 17 survived liveness filtering, scored in one `claude -p` call, 0 crossed the
-`auto_apply_min_score` threshold (highest: 7.5) — expected, since `config/cv.md` is
-still Alice Martin's placeholder profile (French ML-research student) scored against
-real US Data Scientist/Analyst roles, mostly Principal/Senior-level. This run was the
-first real proof of multi-offer batching (previously only tested with N=1) and of
-`cv.md` loading correctly in the cloud (previously never exercised — see Decision #22).
+**Status: confirmed working end-to-end in production (2026-08-26).** 19 real postings in,
+17 survived liveness filtering, scored in one `claude -p` call, 0 crossed the
+`auto_apply_min_score` threshold (highest: 7.5) — expected, since `cv.md` is still Alice
+Martin's placeholder profile scored against real US Principal/Senior roles. First real
+proof of multi-offer batching (previously only N=1) and of `cv.md` loading in the cloud.
 
-**Trigger:** strict single daily cron run (7:00 AM), not on-demand — protects the
-~5 routine-run/day Pro cap.
+**Trigger:** strict single daily cron run (7:00 AM), not on-demand.
 
 **Job description fetching — Lever via plain API, not a browser (Decision #23).**
-`data/pipeline.md` only carries `url | company | title` between phases (body text isn't
-persisted there), so Phase 2 has to re-fetch each posting's body itself. It originally
-did this with Playwright driving a real headless Chromium to the rendered job page —
-but the cloud Routine's sandbox proxy blocks real browser navigation outright
-(`net::ERR_TUNNEL_CONNECTION_FAILED`), a known Claude Code sandbox architectural
-limitation (proxy doesn't support the CONNECT tunneling browsers need), not something
-fixable by browser/version config alone.
+`data/pipeline.md` only carries `url | company | title` between phases, so Phase 2
+re-fetches each posting's body itself. It originally used Playwright to navigate the
+rendered page, but the cloud sandbox's proxy blocks real browser navigation outright
+(`net::ERR_TUNNEL_CONNECTION_FAILED`) — a known Claude Code sandbox architectural
+limitation (the proxy doesn't support the CONNECT tunneling browsers need).
 
-Debugging path before finding the real fix (kept here since it's a durable, reusable
-lesson for any future browser-in-cloud-sandbox issue):
-1. First error: `browserType.launch: Executable doesn't exist` — the sandbox's
-   pre-installed Chromium (`-1194`) didn't match the version the `playwright` npm
-   package expected (`-1217`). Fixed by setting `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`
-   (env var on the Environment) so Playwright looks in the sandbox's actual pre-installed
-   location instead of trying to download a matching version (which is separately
-   blocked — `cdn.playwright.dev` isn't on the network allowlist, and adding it doesn't
-   fully solve this either, see below).
-2. Next error: still `Executable doesn't exist`, now looking for
-   `chromium_headless_shell-1217` specifically — Playwright defaults headless launches to
-   a separate, smaller "headless shell" binary since v1.49, which the sandbox doesn't
-   have (only the full `chromium` binary is pre-installed). Fixed by adding
-   `channel: 'chromium'` to the `launch()` call, forcing use of the full binary.
-2b. That still pointed at a hardcoded version-numbered path
-   (`chromium-1217/chrome-linux64/...`) that didn't match the pre-installed `-1194`
-   binary's real path. Real fix: `/opt/pw-browsers/chromium` is a symlink that always
-   points at whatever version is actually installed (confirmed via `ls -la`) — pointing
-   `executablePath` at that symlink directly sidesteps version-guessing entirely.
-   Conditional on `fs.existsSync(...)` so local WSL2 runs (no `/opt/pw-browsers`) fall
-   through to normal Playwright resolution, unaffected.
-3. With the browser now launching correctly, the real wall appeared:
-   `net::ERR_TUNNEL_CONNECTION_FAILED` on every single fetch — browser navigation itself
-   is blocked in this sandbox, confirmed as a known limitation via real, current GitHub
-   reports (`anthropics/claude-code#11791`: "Browser automation tools (Playwright,
-   Puppeteer, Selenium) are not supported in the web sandbox environment. The security
-   proxy does not support HTTPS CONNECT tunneling required by browsers.").
+Debugging path before finding the real fix (durable lesson for any future
+browser-in-cloud-sandbox issue):
+1. `browserType.launch: Executable doesn't exist` — sandbox ships Chromium `-1194`, the
+   npm package expected `-1217`. Fixed with `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`.
+2. Still failing, now looking for `chromium_headless_shell-1217` — Playwright defaults
+   headless launches to a separate small "headless shell" binary since v1.49, which the
+   sandbox doesn't have. Fixed with `channel: 'chromium'` to force the full binary.
+3. Still pointing at a hardcoded version-numbered path. Real fix:
+   `/opt/pw-browsers/chromium` is a symlink that always points at whatever version is
+   installed — `executablePath` set to that symlink, conditional on `fs.existsSync()` so
+   local WSL2 runs are unaffected.
+4. Browser finally launched — then `net::ERR_TUNNEL_CONNECTION_FAILED` on every fetch.
+   Confirmed as a known limitation via `anthropics/claude-code#11791`: "Browser
+   automation tools (Playwright, Puppeteer, Selenium) are not supported in the web
+   sandbox environment."
 
-**Actual fix:** for Lever URLs, `fetchOfferBody()` now calls the same public Lever board
-API Phase 1's `fetchLever()` already uses successfully in this exact sandbox
-(`api.lever.co/v0/postings/{slug}?mode=json`, plain `fetch()`, no browser, already
-allowlisted) and pulls `descriptionPlain` directly from the matching posting (matched by
-`hostedUrl`). No new dependency, no new domain to allowlist. Non-Lever platforms
-(Greenhouse, Ashby, Workday) still fall back to the original Playwright path — untested
-in the cloud sandbox and will likely hit the same tunnel wall if/when those platforms
-get added to `portals.yml` (see Open Items).
+**Actual fix:** for Lever URLs, `fetchOfferBody()` calls the same public board API Phase 1
+already uses successfully in this sandbox (`api.lever.co/v0/postings/{slug}?mode=json`,
+plain `fetch()`, already allowlisted), pulling `descriptionPlain` from the posting matched
+by `hostedUrl`. Non-Lever platforms still fall back to Playwright — untested in the cloud
+and likely to hit the same wall (see Open Items).
 
 **Input text is extracted, not raw HTML.** `jd-truncate.mjs` keeps
 Responsibilities/Requirements/Qualifications, drops About-us/Benefits/EEO boilerplate,
-caps at `jdMaxTokens` (default 1500/offer, applied per-offer even in the batched path —
-no cross-offer budget scaling yet, noted as a low-priority future item given current
-volume of ~3-4 postings/company).
+caps at `jdMaxTokens` (default 1500/offer, applied per-offer even in the batched path).
 
 **Prompt shape (one call, whole batch):**
 
 ```
-System: [cv.md] + English, US Associate-Data-Scientist scoring criteria (rewritten
-        from the original repo's French/internship-focused prompt — see Decision #15)
+System: [cv.md] + English, US Associate-Data-Scientist scoring criteria
 User:   [offer 1 + url], [offer 2 + url], ... [offer N + url]
 ```
 
-**Response:**
+**Response**, matched back by URL (not response order, so a dropped or reordered entry
+can't corrupt another offer's result):
 
 ```json
-[
-  { "url": "...", "score": 8.5, "reason": ["Strong Python/SQL match", "Genuinely entry-level"] },
-  { "url": "...", "score": 2.5, "reason": ["Part-time contractor, not full-time DS work"] }
-]
+[{ "url": "...", "score": 8.5, "reason": ["Strong Python/SQL match", "Entry-level"] }]
 ```
 
-Matched back to offers by URL (with a loose trailing-slash-tolerant fallback), not by
-response order, so one dropped or reordered entry can't silently corrupt another
-offer's result.
-
-**No essay drafting here — see Decision #11.** This call does scoring only. Essay
-drafting happens exclusively in Phase 4, only for the job you actually apply to.
-
-**Prompt caching not used here** (see Decision #9 — deliberately skipped everywhere in
-this pipeline, not just Phase 2).
-
-**Output:** `data/evaluations.jsonl`, one line per offer — low scores are recorded, not
-discarded, each with its `score` and the 2-3 bullet `reason` Claude gave. Only entries
-scoring at/above threshold make it into Phase 3's digest email; everything else is still
-readable in this file (or via the dashboard — see `src/dashboard/`, not yet reviewed in
-this doc) for sanity-checking Claude's reasoning on rejected postings.
+**Output:** `data/evaluations.jsonl`, one line per offer — **low scores are recorded, not
+discarded**, each with its score and 2-3 bullet reason, so you can sanity-check the
+model's judgment on rejected postings.
 
 ---
 
 ## 5. Phase 3 — Digest (Cloud, $0 AI, Google Sheets → Zapier → Gmail)
 
-**Status: confirmed working end-to-end 2026-08-24** — a real test digest email was
-received in Gmail, not just designed or `--dry-run`'d. See Decision #13 for the full
-story of why this replaced the original webhook plan.
+**Status: confirmed working end-to-end 2026-08-24** — a real digest email was received in
+Gmail. See Decision #13 for why this replaced the original webhook plan.
 
-**Mechanism, in order:**
+**Mechanism:**
 
 1. `node src/digest/index.mjs` reads `data/evaluations.jsonl`, filters to entries scored
-   **today** at/above the threshold (`--min-score`, else `digest_min_score`, else
-   `auto_apply_min_score`, else `7`), and builds the same markdown digest as before
-   (header, one `### Company — Role` block per qualifying job, score, why-fit bullets,
-   `/apply <url>` code block).
-2. It appends **exactly one row** to a Google Sheet (see Decision #17 for why one row,
-   never one per job) with columns, in order: `date`, `subject`, `job_count`, `body`
-   (the entire rendered markdown digest, as one cell).
+   **today** at/above threshold (`--min-score` → `digest_min_score` →
+   `auto_apply_min_score` → `7`), and builds a markdown digest (header, one
+   `### Company — Role` block per qualifying job, score, why-fit bullets, and an apply
+   command — **still shows `/apply <url>`, not `capply`; see Open Items**).
+2. Appends **exactly one row** to a Google Sheet (Decision #17): `date`, `subject`,
+   `job_count`, `body` (the whole rendered digest in one cell).
 3. Zapier watches that Sheet — **Trigger: Google Sheets → "New Spreadsheet Row"**
-   (Instant) — and on a new row, runs **Action: Gmail → "Send Email"**, with the Zap's
-   Subject and Body fields mapped directly from the row's `subject` and `body` columns.
-   **Body type: Plain** — Markdown syntax (`##`, `**`, code fences) renders as literal
-   characters in the email, a deliberate simplification for the POC, not a bug (see Open
-   Items for the optional HTML-formatting upgrade path).
+   (Instant) → **Action: Gmail → "Send Email"**, Subject/Body mapped from the row.
+   **Body type: Plain**, so Markdown renders as literal characters — a deliberate POC
+   simplification, not a bug.
 
-**Google Sheet:**
-- Name: "Daily Application Digest"
-- Tab: "Digest"
-- Columns (row 1 headers): `date | subject | job_count | body`
-- Spreadsheet ID stored in `config/candidate-profile.yml` as `digest_sheet_id`
-  (resolution order: `--sheet-id` flag → `$GOOGLE_SHEETS_DIGEST_ID` env var →
-  `digest_sheet_id` in the profile)
+**Google Sheet:** "Daily Application Digest", tab "Digest", columns
+`date | subject | job_count | body`. Spreadsheet ID in `candidate-profile.yml` as
+`digest_sheet_id` (resolution: `--sheet-id` flag → `$GOOGLE_SHEETS_DIGEST_ID` →
+profile).
 
-**Auth — Google service account:**
-- Service account: `digest-writer@claude-apply.iam.gserviceaccount.com`
-- Scope: `https://www.googleapis.com/auth/spreadsheets` only — no other Google API access
-- Shared on the target Sheet as Editor (required for the API to write rows)
-- Credential delivery is dual-path (see Decision #18): a local key file at
-  `config/google-service-account.json` (referenced via the standard
-  `$GOOGLE_APPLICATION_CREDENTIALS` env var, `.gitignore`'d, never committed) for WSL2
-  runs, and the same key's raw JSON content stored as the `GOOGLE_SERVICE_ACCOUNT_JSON`
-  environment variable on the cloud Routine's custom Environment (`claude-apply`) for
-  cloud runs — `digest/index.mjs`'s `buildSheetsClient()` checks for the env var first,
-  falls back to the file-path method if absent.
+**Auth — Google service account:** `digest-writer@claude-apply.iam.gserviceaccount.com`,
+scoped to `spreadsheets` only, shared as Editor on the target Sheet. Dual-path credential
+delivery (Decision #18): local key file at `config/google-service-account.json` via
+`$GOOGLE_APPLICATION_CREDENTIALS` for WSL2 runs; the same key's raw JSON as the
+`GOOGLE_SERVICE_ACCOUNT_JSON` env var on the cloud Environment.
+`buildSheetsClient()` checks the env var first, falls back to the file.
 
-**Why Zapier's Free plan is genuinely sufficient here (see Decision #13):** Google
-Sheets and Gmail are both non-premium Zapier apps, so this fits inside Free's 2-step Zap
-limit with no premium-app paywall. Trigger checks (polling or the "instant" push variant)
-never consume Zapier tasks — confirmed directly from Zapier's own pricing page and help
-docs — only the Gmail send action does, at roughly 1 task/day for a once-daily digest,
-far under the 100-task/month Free allowance.
+**Why Zapier Free is sufficient:** Sheets and Gmail are both non-premium, fitting Free's
+2-step limit. Trigger checks never consume tasks — only the Gmail send does, ~1 task/day
+against a 100/month allowance.
 
-**Filter:** unchanged from the original design — `evaluations.jsonl` entries where
-`score >= 7` (0-10 scale, see Decision #14), scored **today** specifically, so a daily
-run doesn't re-send yesterday's jobs.
-
-**No essay preview** — essays are only ever drafted in Phase 4, for the specific job you
-choose to apply to (see Decision #11).
-
-**`--dry-run` prints the full row/payload and rendered markdown, writes nothing** — the
-safe way to test formatting without touching the Sheet.
+**`--dry-run` prints the row and rendered markdown, writes nothing.**
 
 ---
 
 ## 6. Phase 4 — Local Apply (WSL2/Ubuntu, 0-1 AI calls, TRIPWIRE)
 
-**Status: promoted from POC to a real script and confirmed working against a live
-posting** (2026-08-22) — `src/apply/index.mjs`, invoked via the real `/apply` slash
-command (not just direct `node` calls). Verified live, twice, against a real Lever
-posting (PointClickCare, Associate Data Scientist): scanned 34 real fields, correctly
-filled standard fields from `config/candidate-profile.yml`, made exactly **one** batched
-AI call for 3 genuine free-text questions (confirmed via real usage data in the run
-output — not per-field calls), correctly detected the submit button and refused to click
-it, injected the review banner, and left the tab open. Testing against a real posting
-(rather than mock data alone) surfaced and fixed three real bugs that unit tests alone
-hadn't caught:
+**Status: first real full-form live test completed successfully (2026-08-27)** — a real
+20-field Lever application (Epoch AI, Data Scientist), run via `capply`, start to finish,
+**no hangs**, tripwire correctly stopped at Submit. Result: **7 filled, 13 flagged for
+review (6 required)**, every field resolving in well under a second except the one AI
+call. This followed a full day of debugging real, reproducible bugs — documented below,
+since the debugging path matters as much as the fixes.
 
-- Company/Role were parsed backwards from the page title — fixed.
-- Work-authorization and sponsorship questions were misclassified as a job-history
-  field, because both questions happened to contain the word "Company" and a broader,
-  earlier classifier rule matched first — fixed by reordering.
-- The location field's on-page helper text was getting swept into its label, making it
-  look like a long essay question and routing it to the AI free-text pool instead of the
-  profile's city/country — detection is now fixed (routes to a dedicated `location`
-  action), but **actually selecting a real dropdown suggestion is not yet confirmed
-  working** — see Open Items.
+**Why `/apply` was retired as the daily path (Decision #24).** Every `/apply` failure
+traced to Claude Code's permission/tool-call layer — a rejected Bash prompt, a tool call
+silently denied when a new message arrived while the dialog was open, one harness-level
+"Tool result missing due to internal error." The script never executed in any of those
+cases. `capply` runs it directly. **Consequence: the terminal is the only record of a
+run**, which motivated the logging work below.
 
-**Precondition:** `chrome-apply` running (confirmed working — real Chrome window,
-authenticated, isolated profile, port 9222).
+**Captcha handling — pause-and-auto-resume (Decision #25).** Lever's hCaptcha triggers
+*reactively during filling* based on interaction patterns — a real, observed behavior,
+not just a page-load gate. `waitOutCaptcha()` pauses, prints a message, polls every 3s,
+and resumes automatically once solved. Checked after **every individual field**, since a
+per-step check can land entirely inside the window where a challenge appeared and
+cleared. Confirmed working live across two runs (captcha appeared mid-fill, cleared in
+6-9s, filling resumed correctly).
 
-**Step A — Scan the page ($0 AI, code confirmed to exist):**
-Playwright, connected via CDP, walks the page. Label extraction uses the real
-`dom-label.browser.js` script (injectable via `page.evaluate()`), which already handles
-Lever/Ashby/Greenhouse-specific label patterns plus generic `label[for]`/`aria-label`
-fallbacks.
+Detection needed two rounds of tuning, both from real false positives:
+- **DOM presence was too broad.** Lever embeds a *dormant, invisible* hCaptcha widget on
+  every page for passive bot-scoring. A presence-only iframe check flagged it as an
+  active challenge on every run. Fixed by requiring real rendered visibility (non-zero
+  size, not `display:none`/`visibility:hidden`).
+- **Text patterns were too broad.** The original `/captcha/i` and `/challenge/i` matched
+  Lever's own "protected by hCaptcha" footer and the word "challenge" in ordinary job
+  descriptions — causing false 10-minute stalls. Narrowed to active-challenge phrasing
+  only ("verify you are human", "i am not a robot", Cloudflare interstitial text).
 
-**Step B — Classify and fill standard fields ($0 AI, code confirmed to exist):**
-`field-classifier.mjs`'s `classifyField()` matches each field against ~30 known patterns
-(email, phone, first/last name, education, work experience, work authorization,
-sponsorship, EEO questions, file uploads, etc.) and `mapProfileValue()` pulls the answer
-directly from `config/candidate-profile.yml`. **No AI call for any of this** — it's pure
-regex matching against your profile data. React-based custom dropdowns are handled by the
-separate `react-select-helper.mjs` snippet (also $0 AI, deterministic).
+**Every field-fill attempt has an 8-second timeout (Decision #26).** `selectOption()`
+doesn't fail fast when no option matches — it retries internally for ~30s, which is
+indistinguishable from a hang. This is what made the country and EEO dropdowns *appear*
+stuck before the real cause was found. Any field that can't resolve now fails within 8s
+with a logged reason, and the run continues.
 
-**Step C — Free-text fields (1 AI call, only if needed):**
-Only fields `classifyField()` returns as `free_text` (a `<textarea>` matching no other
-pattern) need an actual generated answer. If a form has one or more such fields, one
-prompt is sent: the question(s) + `cv.md`, grounded, 80-150 words, "never invent
-experience." Many applications — those with only standard fields — will need **zero**
-AI calls in this step. **This is the only place in the whole pipeline an essay answer
-ever gets written** (see Decision #11) — nothing is pre-drafted in Phase 2.
+**Live per-field terminal logging (added same day).** Every field prints its outcome the
+instant it resolves, plus phase markers for config load, Chrome connect, page open, each
+step's scan, and the AI call (explicitly announced before dispatch, since it's the one
+legitimately slow step). Sample:
 
-**No prompt caching here** — investigated and deliberately skipped (see Decision #9).
-`claude -p` doesn't expose manual cache-breakpoint control; getting real caching would
-require bypassing it for a direct, separately-billed API call, which isn't worth it at
-current volume (~3 applications/day).
+```
+✓ profile + cv.md loaded
+→ connecting to Chrome DevTools at http://localhost:9222...
+✓ connected to Chrome
+Detected: company="Epoch AI"  role="Data Scientist"  language=en
 
-**Step D — Resume upload ($0 AI, code confirmed to exist):**
-`upload-file.mjs` connects via Playwright's `connectOverCDP` and sets the file directly
-on the `<input type="file">` element — bypasses page-level upload restrictions. Genuinely
-tested, real CDP mechanics, not a placeholder.
+── step 1: 20 field(s) found, filling now ──
+  [fill]    ✓ full_name        → Alice Martin
+  [review] ✗ location          — location autocomplete: no value confirmed
+  → calling Claude for 4 free-text question(s) (this can take 10-30s)...
+  ✓ AI responded (usage={...})
+```
 
-**Step E — TRIPWIRE:**
-Halts unconditionally at the final review screen. Never calls Submit. You review, solve
-any CAPTCHA, and click Submit yourself.
+Before this, "working slowly" and "genuinely stuck" were indistinguishable from the
+terminal — which caused real debugging confusion earlier the same day.
 
-**What's still not covered, by design choice made today (not oversight):** per your own
-instruction, accuracy/coverage polish was explicitly deprioritized in favor of proving
-the pipeline mechanism end-to-end. Known gaps, all correctly routed to manual review
-rather than silently guessed wrong: skill-rating questions ("rate your SQL
-proficiency"), "what US state do you reside in", and any EEO/Yes-No option whose exact
-wording doesn't match the classifier's known phrasing. Cover-letter generation
-(`renderLatex`) exists in the repo but isn't wired into `index.mjs` yet — those fields
-also route to manual review for now. See Open Items for the full list.
+**Three field-handling bugs found and fixed via live testing (Decision #27):**
+- **Word-boundary bug:** `experience_end`'s `end.*(work|job)` matched "int**end**",
+  misclassifying "Which country do you intend to primarily work from?" as a job end-date
+  field. Fixed with `\bend\b`/`\bstart\b` in `field-classifier.mjs`.
+- **Long-paragraph misclassification:** personal-data classKeys were matched against a
+  radio-group's full question paragraph (up to 300 chars from the DOM label-reader), so a
+  Yes/No consent question mentioning "email" in its explanatory text became the email
+  field. Fixed with a `RADIO_INVALID_KEYS` guard in `planFields()` — those classes can
+  never legitimately describe a Yes/No question, so a match falls back to `unknown`.
+- **Slow-fail selects:** `fillSimple()`'s plain-`<select>` branch now verifies a matching
+  option exists before calling `selectOption()`. Confirmed via the real HTML of Epoch
+  AI's country dropdown that this is a **plain native `<select>`**, not a custom React
+  widget as originally suspected — the "custom widget" theory was wrong, and the real
+  cause was purely a value mismatch.
+
+**Precondition:** `chrome-apply` running (see Section 1's GPU-flag fix).
+
+**Step A — Scan the page ($0 AI):** Playwright over CDP walks the page; label extraction
+uses `dom-label.browser.js`, handling Lever/Ashby/Greenhouse label patterns plus generic
+`label[for]`/`aria-label` fallbacks.
+
+**Step B — Classify and fill standard fields ($0 AI):** `classifyField()` matches ~30
+known patterns; `mapProfileValue()` pulls answers from `candidate-profile.yml`. Pure
+regex, no AI. React-based dropdowns handled by `react-select-helper.mjs`.
+
+**Step C — Free-text fields (1 AI call, only if needed):** only `free_text` fields need a
+generated answer. One prompt covers all of them: questions + `cv.md`, grounded, 80-150
+words, "never invent experience." Forms with only standard fields need **zero** AI calls.
+**This is the only place in the pipeline an essay is ever written** (Decision #11).
+
+**Step D — Resume upload ($0 AI):** `upload-file.mjs` sets the file directly on the
+`<input type="file">` via CDP. **Still never exercised in a real `capply` run** — the
+2026-08-27 test correctly flagged `cv_upload` for review because `config/cv.pdf` doesn't
+exist yet (only `cv.md`). See Open Items.
+
+**Step E — TRIPWIRE:** halts unconditionally at the review screen, never calls Submit.
+Confirmed working in the live test — detected the real "Submit application" button and
+stopped.
+
+**Real first-run results (Epoch AI, 20 fields):** 7 filled (full_name, email, phone,
+experience_company, linkedin, experience_start, one AI free-text answer). 13 flagged —
+mostly expected gaps (`cv_upload` no PDF; `location` known gap; 3 fields with no
+classifier rule, correctly `unknown` rather than guessed; 3 free-text questions Claude
+correctly declined per its grounding rules, one of which required filling out a separate
+Google Doc). One real open bug: **`work_auth` "no confident option match"** — the profile
+holds a descriptive sentence ("EU citizen — no sponsorship needed") but `chooseOption()`
+only recognizes literal yes/no/true/false for a Yes/No radio. See Open Items.
 
 ---
 
 ## 7. Verified Reusable Code Inventory
 
-Every file below was opened and read directly — not assumed from the README — to avoid
-repeating an earlier mistake where a described-but-unverified script turned out not to
-exist.
+Every file below was opened and read directly — not assumed from the README.
 
-| File                                        | Confirmed contents                                                                                                                                                                                                                                                                                       | AI involved?                                                  |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `field-classifier.mjs`                      | `classifyField()` — regex-matches ~30 field types; `mapProfileValue()` — maps to profile data                                                                                                                                                                                                            | No                                                            |
-| `dom-label.mjs` / `dom-label.browser.js`    | `extractLabel()` — finds a field's human label across multiple ATS-specific patterns; `clickInQuestion()` — clicks a radio/checkbox by matched question+choice text                                                                                                                                      | No                                                            |
-| `react-select-helper.mjs`                   | `REACT_SELECT_SNIPPET` — opens and selects from React-Select-style custom dropdowns                                                                                                                                                                                                                      | No                                                            |
-| `upload-file.mjs`                           | `uploadFile()` — genuine Playwright `connectOverCDP` file upload                                                                                                                                                                                                                                         | No                                                            |
-| `step-detect.mjs`                           | `detectStep()` — detects which page of a multi-step flow you're on via URL/DOM markers shaped like Workday's flow                                                                                                                                                                                        | No (but see Open Items — conflicts with README)               |
-| `confirmation-detector.mjs`                 | Old success/fail page detection — confirmed dead code, not called since the auto-submit tripwire patch                                                                                                                                                                                                   | No                                                            |
-| `accounts.mjs`                              | Generates/stores per-ATS email aliases + random passwords for platforms requiring account creation                                                                                                                                                                                                       | No                                                            |
-| `language-detect.mjs`                       | Detects French vs. English from job posting text; **defaults to French when ambiguous**                                                                                                                                                                                                                  | No                                                            |
-| `cover-letter.mjs` / `letter-generator.mjs` | Optional cover-letter generation — calls `claude -p` (same subscription billing as Phase 2)                                                                                                                                                                                                              | **Yes, if used**                                              |
-| `apply-log.mjs`                             | Simple JSON-line logging of each apply attempt                                                                                                                                                                                                                                                           | No                                                            |
-| `score/prompt-builder.mjs`                  | `buildPrompt()` / `buildBatchPrompt()` — rewritten today for English/US criteria; confirmed 0-10 scale, `{score, reason}` shape                                                                                                                                                                          | Builds the prompt for Phase 2's call                          |
-| `score/jd-truncate.mjs`                     | `truncateJd()` — confirmed genuine smart section-based extraction (keeps Requirements/Qualifications, drops About-us/Benefits), not a blunt cutoff                                                                                                                                                       | No                                                            |
-| `score/index.mjs`                           | `fetchOfferBody()` — Lever URLs use a plain `fetch()` to Lever's public board API (Decision #23); non-Lever URLs fall back to Playwright (unproven in the cloud sandbox). `--batch` builds one prompt for all pending offers, one `claude -p` call total.                                              | 1 batched call per `--batch` run                              |
-| `apply/index.mjs`                           | Top-level Phase 4 orchestrator — Playwright/CDP, calls `field-classifier`, `dom-label`, `react-select-helper`, `upload-file`, `apply-log` directly. Confirmed working live (twice) against a real Lever posting. Does NOT yet call `cover-letter.mjs`/`renderLatex` — see Open Items                     | 1 batched call per page, only for genuine free-text questions |
-| `.claude/commands/apply.md`                 | Thin wrapper: checks profile exists, runs `index.mjs` as one Bash call, relays output verbatim. Replaces the former ~440-line agent playbook                                                                                                                                                            | No (Claude just invokes and relays)                           |
-| `digest/index.mjs`                          | **Rewritten 2026-08-24.** Reads `evaluations.jsonl`, filters by score/date, builds the markdown digest, then appends one `[date, subject, job_count, body]` row to a Google Sheet via `spreadsheets.values.append()`. Auth via `GOOGLE_SERVICE_ACCOUNT_JSON` (cloud) or `GOOGLE_APPLICATION_CREDENTIALS` file (local). Confirmed working end-to-end — real email received. See Section 5 | No                                                            |
-| `lib/candidate-profile.schema.mjs`          | `validateProfile()` — strict allowlist validator for `candidate-profile.yml` (`REQUIRED_FIELDS` + `OPTIONAL_FIELDS`); rejects any key not on the list. Updated 2026-08-24 for `digest_sheet_id`/`digest_sheet_name`/`digest_min_score` (Decision #21); updated again 2026-08-26 for `target_locations`. | No                                                            |
-| `lib/load-profile.mjs`                      | `loadProfile()` — reads and validates `candidate-profile.yml` against the schema above; called by both `scan/index.mjs` and `score/index.mjs`, which is why a schema mismatch in one config field can block Phase 1 even if only Phase 3 needed that field (see Decision #21)                          | No                                                            |
+| File | Confirmed contents | AI involved? |
+| --- | --- | --- |
+| `field-classifier.mjs` | `classifyField()` — regex-matches ~30 field types; `mapProfileValue()` — maps to profile data. **Fixed 2026-08-27:** word-boundary bug in `experience_end`/`experience_start` (Decision #27). | No |
+| `dom-label.mjs` / `dom-label.browser.js` | `extractLabel()` — finds a field's human label across ATS-specific patterns; `clickInQuestion()` — clicks a radio/checkbox by question+choice text | No |
+| `react-select-helper.mjs` | `REACT_SELECT_SNIPPET` — opens and selects from React-Select-style dropdowns | No |
+| `upload-file.mjs` | `uploadFile()` — genuine Playwright `connectOverCDP` file upload. Works in isolation; not yet exercised in a real run (no `cv.pdf`) | No |
+| `step-detect.mjs` | `detectStep()` — detects multi-step flow position via URL/DOM markers, Workday-shaped | No (see Open Items) |
+| `confirmation-detector.mjs` | Old success/fail page detection — dead code since the tripwire patch | No |
+| `accounts.mjs` | Per-ATS email aliases + random passwords for platforms requiring account creation | No |
+| `language-detect.mjs` | Detects French vs. English from posting text; **defaults to French when ambiguous** | No |
+| `cover-letter.mjs` / `letter-generator.mjs` | Optional cover-letter generation via `claude -p` | **Yes, if used** |
+| `apply-log.mjs` | JSON-line logging of each apply attempt | No |
+| `score/prompt-builder.mjs` | `buildPrompt()` / `buildBatchPrompt()` — English/US criteria, 0-10 scale, `{score, reason}` | Builds Phase 2's prompt |
+| `score/jd-truncate.mjs` | `truncateJd()` — genuine section-based extraction, not a blunt cutoff | No |
+| `score/index.mjs` | `fetchOfferBody()` — Lever via plain `fetch()` to the public board API (Decision #23); non-Lever falls back to Playwright. `--batch` builds one prompt for all pending offers | 1 batched call per `--batch` run |
+| `apply/index.mjs` | Phase 4 orchestrator. **Substantially rewritten 2026-08-27:** `waitOutCaptcha()` pause/resume (#25), `FIELD_TIMEOUT_MS` per-field cap (#26), live per-field logging, `RADIO_INVALID_KEYS` guard + fast-fail `<select>` (#27). Confirmed live against a real 20-field Lever form via `capply`. Does NOT yet call `cover-letter.mjs` | 1 batched call per page, free-text only |
+| `.claude/commands/apply.md` | Thin wrapper around `index.mjs`. Still functional, **no longer the documented daily-use path** (Decision #24) | No |
+| `digest/index.mjs` | Reads `evaluations.jsonl`, filters by score/date, builds the digest, appends one row to Google Sheets. Auth via env var (cloud) or file (local). Digest text still says `/apply` — see Open Items | No |
+| `lib/candidate-profile.schema.mjs` | `validateProfile()` — strict allowlist; rejects unknown keys. Updated 2026-08-24 (digest keys) and 2026-08-26 (`target_locations`) | No |
+| `lib/load-profile.mjs` | `loadProfile()` — reads + validates the profile; called by both scan and score, which is why a schema mismatch blocks Phase 1 even for a Phase-3-only field (Decision #21) | No |
 
 ---
 
 ## 8. Cloud Routine & Environment Configuration
 
-**Status: confirmed working end-to-end with real data 2026-08-26** — a real scheduled
-Routine run completed all four steps with exit code 0, found 19 real postings, scored 17
-in one batch call. Resolves Decision #12.
+**Status: confirmed working end-to-end with real data 2026-08-26** — all four steps, exit
+code 0, 19 real postings found, 17 scored in one batch call.
 
 **Routine name:** "Job Pipeline — Scan, Score, Digest"
 **Repository:** `rohanaluri/claude-apply`
-**Trigger:** Schedule → Daily → 7:00 AM EDT (per Decision #10)
-**Environment:** custom cloud Environment named `claude-apply` (see below) — NOT the
-account's default "Daily Notifications" Environment, which belongs to an unrelated
-morning-news Routine and should stay untouched (see Section on Routine daily-run cap
-below).
+**Trigger:** Schedule → Daily → 7:00 AM EDT (Decision #10)
+**Environment:** custom cloud Environment `claude-apply` — NOT the account's default
+"Daily Notifications" Environment, which belongs to an unrelated morning-news Routine.
 
 **Instructions (the Routine's actual prompt), in full:**
 
@@ -499,145 +516,112 @@ and whether Phase 3 wrote a digest row today or reported nothing
 qualified.
 ```
 
-Note `npm install` is step 1 of the *instructions*, not the Environment's setup script —
-see Decision #20 for why that split matters.
+`npm install` is step 1 of the *instructions*, not the Environment's setup script —
+Decision #20 for why that split matters.
 
 **Custom Environment `claude-apply` configuration:**
-- **Network access:** Custom (not the default "Trusted" — see Decision #19), with these
-  domains explicitly allowed:
-  - `api.lever.co` (Phase 1 scan, and now Phase 2's Lever body-fetch — Decision #23)
-  - `sheets.googleapis.com` (Phase 3 Sheets write)
-  - `oauth2.googleapis.com` (Phase 3 service-account auth token exchange)
+- **Network access:** Custom (not "Trusted" — Decision #19), allowing:
+  - `api.lever.co` (Phase 1 scan, and Phase 2's Lever body-fetch — Decision #23)
+  - `sheets.googleapis.com`, `oauth2.googleapis.com` (Phase 3)
   - "Also include default list of common package managers" — checked, so `npm install`
-    still works alongside the custom domains
-  - **Not yet added, needed if `portals.yml` grows:** `api.ashbyhq.com` (Ashby
-    companies), `*.myworkdayjobs.com` per company (Workday companies) — see Open Items
-  - **Deliberately NOT added:** `cdn.playwright.dev` — tried adding a
-    `npx playwright install chromium` step, which failed with a 403 from this domain;
-    turned out to be unnecessary once `PLAYWRIGHT_BROWSERS_PATH` was set to use the
-    sandbox's pre-installed browser instead (see Decision #23) — no download needed.
+    works alongside the custom domains
+  - **Not yet added, needed if `portals.yml` grows:** `api.ashbyhq.com`,
+    `*.myworkdayjobs.com` per company
+  - **Deliberately NOT added:** `cdn.playwright.dev` — an attempted
+    `npx playwright install chromium` step 403'd on this domain, then turned out to be
+    unnecessary once `PLAYWRIGHT_BROWSERS_PATH` pointed at the pre-installed browser
 - **Environment variables:**
-  - `GOOGLE_SERVICE_ACCOUNT_JSON` — the service account's full key JSON, single-line
-    (see Decision #18)
-  - `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` — added 2026-08-26, points Playwright at
-    the sandbox's pre-installed browser location instead of trying to download one (see
-    Decision #23)
-- **Setup script:** currently still contains a leftover, now-redundant `npm install`
-  (harmless — see Open Items) from before Decision #20's fix; the actual `npm install`
-  that matters runs as step 1 of the Instructions above.
+  - `GOOGLE_SERVICE_ACCOUNT_JSON` — full key JSON, single-line (Decision #18)
+  - `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` — added 2026-08-26 (Decision #23)
+- **Setup script:** still contains a leftover, now-redundant `npm install` — harmless,
+  see Open Items.
 
-**Daily-run cap:** Pro allows 5 automated Routine runs/day, **shared across the whole
-account**, not per-Routine — confirmed via Anthropic's own routines documentation.
-This account already has one other Routine (the unrelated morning-news briefing, 1
-run/day); adding this one brings the total to 2/day, comfortably under the cap. Manual
-"Run now" clicks do **not** count against this cap (confirmed from the same docs) — used
-extensively during debugging (2026-08-24 through 2026-08-26) without any budget concern.
+**Daily-run cap:** Pro allows 5 automated Routine runs/day, **shared across the account**,
+not per-Routine. This account has 2 Routines total (this one + an unrelated morning-news
+briefing), comfortably under. Manual "Run now" clicks do **not** count — used extensively
+during debugging 2026-08-24 through 2026-08-27 with no budget concern.
 
 ---
 
 ## 9. Open Items
 
-- [x] ~~Top-level Phase 4 orchestration script doesn't exist yet.~~ **Resolved
-      2026-08-22:** `src/apply/index.mjs` built, promoted from the POC, confirmed
-      working live via the real `/apply` command against a real Lever posting.
-- [x] ~~The real Zapier webhook doesn't exist yet.~~ **Superseded 2026-08-24 — see
-      Decision #13:** the webhook approach was abandoned (Zapier's Webhooks app is
-      Premium-only); replaced with a confirmed-working Google Sheets → Zapier → Gmail
-      flow, tested with a real received email.
-- [x] ~~No cloud Routine has been created for this project yet.~~ **Resolved
-      2026-08-23/24:** Routine created, scheduled daily at 7:00 AM EDT, and confirmed
-      running all four pipeline steps end-to-end with exit code 0 — see Section 8.
-- [x] ~~`config/portals.yml`'s tracked companies are mostly stale/wrong.~~ **Resolved
-      2026-08-26:** swapped to confirmed-live Lever boards (PointClickCare, Analytic
-      Partners); `title_filter` broadened from Intern/Stage to Data/Analyst/Scientist/
-      Engineer; `target_locations` global override added to `candidate-profile.yml`
-      (was silently deriving to France/Paris from placeholder city/country). 19 real
-      postings found in the next run.
-- [x] ~~Phase 2's true multi-offer batching (N > 1 live postings, one prompt) is still
-      unproven in production.~~ **Resolved 2026-08-26:** 17 live offers, one batch
-      call, real distinct scores (0.3–7.5) returned and written to
-      `evaluations.jsonl`.
-- [x] ~~`config/cv.md` is still not committed and has never been exercised by a cloud
-      run.~~ **Resolved 2026-08-26:** force-committed (same rationale as Decision #22
-      — Alice Martin placeholder data, no real PII) and confirmed read correctly by
-      Phase 2 in the cloud during the same run that proved multi-offer batching.
-- [ ] **`google-service-account.json`'s full key contents were pasted into this chat's
-      history during setup.** Recommend rotating (delete + regenerate) the key in Google
-      Cloud Console as routine hygiene once active iteration on Phase 3 settles down.
-      Not urgent — narrow scope (Sheets-API-only, Editor on one non-sensitive
-      spreadsheet) and a solo-user account keep real risk low.
-- [ ] **Digest emails render as plain text — Markdown syntax shows as literal
-      characters** (`##`, `**`, code fences), since the Zap's Gmail action uses Body
-      type "Plain." Deliberate simplification for the POC, not a bug. Upgrading to real
-      HTML formatting would need either a Markdown→HTML formatter step added to the Zap,
-      or having `digest/index.mjs` render HTML directly instead of Markdown.
-- [ ] **Non-Lever platforms (Greenhouse, Ashby, Workday) still use Playwright for Phase
-      2 body-fetching, unproven in the cloud sandbox.** Only Lever got the plain-API fix
-      (Decision #23) since that's 100% of current `portals.yml`. If Greenhouse/Ashby
-      companies get added later, they'll likely hit the same
-      `net::ERR_TUNNEL_CONNECTION_FAILED` wall and need the same treatment — both
-      already expose full body text via their own public APIs in `src/scan/ats/`
-      (confirmed: `fetchGreenhouse`, `fetchAshby` both map a `body` field the same way
-      `fetchLever` does), so the same fix pattern applies directly. Workday is a
-      separate, harder problem — its listing API doesn't return job descriptions at
-      all, and per-posting detail-fetch is explicitly unimplemented (`fetchOfferBody`
-      in `src/scan/`: "Workday detail-fetch not implemented").
-- [ ] **The cloud Environment's network allowlist only covers Lever + Google APIs.**
-      Adding Ashby companies to `portals.yml` will need `api.ashbyhq.com` added to the
-      Custom allowlist; adding Workday companies will need each company's own
-      `*.myworkdayjobs.com` domain added — otherwise those scans will silently 403-fail
-      the same way Lever did before this was fixed (see Decision #19).
-- [ ] **The Environment's Setup script still contains a leftover, now-redundant `npm
-      install`** left over from before it was moved into the Routine's own Instructions
-      (Decision #20). Harmless (re-runs quickly, does nothing extra) but worth clearing
-      out for cleanliness.
-- [ ] **Location-autocomplete fill is not yet confirmed working.** Detection is fixed
-      (routes to a dedicated `location` action instead of the AI free-text pool), but
-      the actual fill — typing + selecting a real dropdown suggestion — has been tested
-      live twice and hasn't produced a confirmed value either time. Need to inspect the
-      real widget's HTML (input + suggestion item) on an actual Lever posting to build
-      an accurate selector instead of the current generic guess.
-- [ ] **Several field types have no classifier mapping or profile field yet** —
-      correctly routed to manual review, not silently guessed, but worth expanding if
-      apply volume increases: skill-rating questions ("rate your SQL proficiency"),
-      "what US state do you reside in" (profile only has city/country/postal_code).
-- [ ] **EEO and Yes/No option-matching is intentionally conservative.**
-      `chooseOption()` in `index.mjs` refuses to guess when a dropdown's exact wording
-      doesn't match known phrasing (e.g. non-standard "prefer not to say" variants) —
-      correct per design, but means many required EEO/boolean fields will need manual
-      selection until the known-phrasing list is expanded from real-world examples.
-- [ ] **Cover-letter generation isn't wired into `index.mjs` yet.** `cover-letter.mjs`'s
-      `renderLatex()` exists and is real, but calling it from Phase 4 hasn't been done —
-      `cover_letter_upload`/`cover_letter_text` fields currently route to manual review.
-- [ ] **Only tested on one ATS (Lever), one company (Phase 4).** Everything
-      platform-specific in the Phase 4 fixes (the location field's structure, in
-      particular) is Lever-shaped and unverified elsewhere — Greenhouse, Ashby, and
-      Workday each implement custom widgets differently and will likely need their own
-      handling, not a shared guess.
-- [ ] **Workday step-detection conflict.** `step-detect.mjs` contains real, Workday-shaped
-      step signatures, but the README explicitly says "`/apply` support not yet
-      implemented" for Workday. Don't assume Workday applications work until this is
-      resolved directly — the code may be partial/unused scaffolding.
-- [ ] **Account-creation flow (`accounts.mjs`) isn't accounted for in this design yet.**
-      Some ATS platforms require creating a login before applying — this needs a step in
-      the Phase 4 flow we haven't designed.
-- [ ] **`claude-in-chrome` extension's exact role is still unclear** now that Phase 4 is
-      code-driven rather than agent-driven. May not be needed at all for the new design —
-      needs confirming before assuming it's required.
-- [ ] **`config/cv.md` and `config/candidate-profile.yml`'s personal fields are still
-      templates.** Real data needed before either phase produces meaningful output for
-      you specifically. (Both currently hold the repo's own Alice Martin French-student
-      example, used through 2026-08-26 only as throwaway test data — never assumed
-      real. This is why every score from the 2026-08-26 run was low/skip — expected,
-      not a bug.)
-- [ ] Confirm Claude Code Routines' daily run cap (5/day on Pro, shared across the whole
-      account, confirmed — see Section 8) stays comfortable once both Routines run
-      daily plus normal interactive Claude Code development usage.
-- [ ] **Real per-call cost is now measured, not estimated: $0.11 for one offer, cache
-      miss** (first call ever, nothing to read from cache). Still need a same-day repeat
-      run to see the `cache_read` number and get a real repeat-call cost, not just the
-      first-call cost. The 2026-08-26 batch call (17 offers, one call) is a second real
-      cost data point worth pulling from that run's logged `[usage]` line next session.
+- [x] ~~Top-level Phase 4 orchestration script doesn't exist yet.~~ **Resolved 2026-08-22.**
+- [x] ~~The real Zapier webhook doesn't exist yet.~~ **Superseded 2026-08-24 (Decision #13)** — Sheets → Zapier → Gmail instead, tested with a real received email.
+- [x] ~~No cloud Routine has been created yet.~~ **Resolved 2026-08-23/24.**
+- [x] ~~`portals.yml`'s tracked companies are mostly stale/wrong.~~ **Resolved 2026-08-26** — live Lever boards, broadened title filter, explicit `target_locations`. 19 real postings on the next run.
+- [x] ~~Phase 2's multi-offer batching is unproven in production.~~ **Resolved 2026-08-26** — 17 live offers, one batch call, real distinct scores.
+- [x] ~~`config/cv.md` is uncommitted and never exercised by a cloud run.~~ **Resolved 2026-08-26** — force-committed, confirmed read in the cloud.
+- [x] ~~`/apply` hangs or fails with no clear cause, hard to debug.~~ **Resolved 2026-08-27 (Decisions #24-27)** — root-caused to Claude Code's permission layer plus real, now-fixed bugs. `capply` + live per-field logging replace the opaque flow.
+- [ ] **`work_auth` "no confident option match" — real, unresolved.** `work_authorization`
+      is a descriptive sentence ("EU citizen — no sponsorship needed"), but
+      `chooseOption()` only recognizes literal yes/no/true/false for a Yes/No radio.
+      Needs a design decision: a dedicated boolean profile field, or deriving yes/no from
+      the existing text.
+- [ ] **No classifier rule for "which country do you work from" questions**, despite the
+      profile already having a `country` field that answers it. Currently correctly falls
+      to `unknown`/review. Cheap win — we already have the real HTML (a plain `<select>`
+      with ~195 country options).
+- [ ] **EEO dropdown defaults don't match real on-page option text.** Code defaults to
+      `'Prefer not to say'`; Epoch AI's Lever form says "Decline to self-identify". Now
+      fails fast with a clear reason (Decision #26) rather than hanging, but the mismatch
+      is unresolved — and likely varies by company, so a single hardcoded default may
+      never reliably match. Worth reusing `chooseOption()`'s existing decline-detection
+      logic for select-type EEO fields, not just radio-groups.
+- [ ] **`config/cv.pdf` doesn't exist — only `cv.md`.** Resume upload has therefore never
+      run in a real `capply` session. Needs a real PDF at the profile's `cv_path`.
+- [ ] **Phase 3's digest still says `/apply <url>`, not `capply "<url>"`.** Stale given
+      Decision #24 — `digest/index.mjs`'s markdown template needs updating.
+- [ ] **`google-service-account.json`'s key was pasted into chat history during setup.**
+      Rotate as routine hygiene once Phase 3 iteration settles. Low risk (Sheets-only
+      scope, one non-sensitive spreadsheet, solo account).
+- [ ] **Digest emails render as plain text** — Markdown shows literally. Deliberate POC
+      simplification; upgrading needs a Markdown→HTML step in the Zap or HTML rendering
+      in `digest/index.mjs`.
+- [ ] **Non-Lever platforms still use Playwright for Phase 2 body-fetching, unproven in
+      the cloud sandbox.** Greenhouse and Ashby both already expose body text via their
+      own public APIs (`fetchGreenhouse`, `fetchAshby` map a `body` field the same way
+      `fetchLever` does), so Decision #23's fix pattern applies directly when needed.
+      Workday is harder — its listing API returns no descriptions and per-posting
+      detail-fetch is explicitly unimplemented.
+- [ ] **Network allowlist only covers Lever + Google APIs** — adding Ashby or Workday
+      companies will need their domains added, or those scans silently 403-fail.
+- [ ] **The Environment's setup script still has a redundant `npm install`** — harmless,
+      worth clearing for cleanliness.
+- [ ] **Location-autocomplete fill still not working.** Detection is correct (routes to a
+      dedicated `location` action), but the fill — typing + selecting a real suggestion —
+      has failed on every live test including 2026-08-27. Needs the real widget's HTML
+      (input + suggestion item) to build an accurate selector instead of the current
+      generic guess.
+- [ ] **Several field types still have no classifier rule** — correctly routed to review
+      rather than guessed, but worth adding as volume grows: "how did you hear about us"
+      (a multiple-choice radio), "timezone relocation willingness", skill-rating
+      questions, "what US state do you reside in".
+- [ ] **Radio-group EEO/Yes-No matching is intentionally conservative.** `chooseOption()`
+      refuses to guess on unrecognized phrasing — correct by design, but means many
+      required fields need manual selection until the known-phrasing list grows from real
+      examples. (Distinct from the select-type EEO gap above — select fields don't go
+      through `chooseOption()` at all.)
+- [ ] **Cover-letter generation isn't wired into `index.mjs`.** `renderLatex()` exists and
+      is real, but `cover_letter_*` fields currently route to manual review.
+- [ ] **Only tested on one ATS (Lever), two companies (PointClickCare, Epoch AI).**
+      Everything platform-specific in the Phase 4 fixes is Lever-shaped and unverified
+      elsewhere.
+- [ ] **Workday step-detection conflict.** `step-detect.mjs` has real Workday-shaped
+      signatures, but the README says Workday `/apply` isn't implemented. Don't assume it
+      works — may be partial scaffolding.
+- [ ] **Account-creation flow (`accounts.mjs`) isn't in this design yet.** Some ATS
+      platforms require a login before applying.
+- [ ] **`claude-in-chrome`'s role is unclear** now that Phase 4 is code-driven and invoked
+      via `capply` without Claude Code at all. May not be needed.
+- [ ] **`cv.md` and `candidate-profile.yml` are still templates.** Real data needed before
+      either phase produces meaningful output. (This is why every Phase 2 score has been
+      low/skip — expected, not a bug.)
+- [ ] Confirm the 5/day Routine cap stays comfortable alongside normal interactive Claude
+      Code usage.
+- [ ] **Real per-call cost measured: $0.11 for one offer, cache miss.** Still need a
+      same-day repeat run for a real `cache_read` repeat-call cost. The 2026-08-26 batch
+      call (17 offers, one call) is a second data point worth pulling from its logged
+      `[usage]` line.
 
 ---
 
