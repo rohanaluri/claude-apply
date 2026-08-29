@@ -53,6 +53,10 @@ const OPTIONAL_FIELDS = [
   'willing_to_travel_percent',
   'salary_expectation',
   'referral_source',
+  // Added 2026-08-27: covers "share your info with related groups/partners
+  // for referrals" style consent questions, worded many different ways per
+  // company. Matched semantically by Claude, same pattern as referral_source.
+  'share_info_consent',
 ];
 
 function validateEducationEntry(e, i) {
@@ -153,6 +157,11 @@ export function validateProfile(profile) {
   if (profile.relocation_flexible !== undefined && profile.relocation_flexible !== null) {
     if (typeof profile.relocation_flexible !== 'boolean') {
       errors.push('relocation_flexible must be a boolean (true/false)');
+    }
+  }
+  if (profile.share_info_consent !== undefined && profile.share_info_consent !== null) {
+    if (typeof profile.share_info_consent !== 'boolean') {
+      errors.push('share_info_consent must be a boolean (true/false)');
     }
   }
   if (

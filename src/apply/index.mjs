@@ -491,6 +491,16 @@ export function planFields(fields, profile) {
 
     if (f.kind === 'radio-group') {
       const choice = chooseOption(f.options, value, classKey);
+      if (!choice) {
+        // Debug log (2026-08-27): without this, "no confident option match"
+        // gives no way to tell WHY — was the desired value wrong, were the
+        // real options not what we expected, or something else? Prints the
+        // exact inputs chooseOption() saw, so a mismatch is diagnosable from
+        // the terminal instead of guessed at.
+        console.error(
+          `  [debug] radio match failed for classKey="${classKey}": desired=${JSON.stringify(value)}, real options=${JSON.stringify(f.options)}`
+        );
+      }
       return choice
         ? { ...f, classKey, action: 'radio', value: choice }
         : { ...f, classKey, action: 'review', reason: 'no confident option match', value };
@@ -923,6 +933,11 @@ function buildPreferencesText(profile) {
   if (profile.referral_source) {
     lines.push(`How they typically find/hear about jobs: ${profile.referral_source}`);
   }
+  if (profile.share_info_consent !== undefined && profile.share_info_consent !== null) {
+    lines.push(
+      `Consent to sharing application info with related groups/partners/referrals: ${profile.share_info_consent ? 'Yes' : 'No'} (applies regardless of how the question is worded — data sharing, referral consent, information sharing with partner orgs, etc. are all the same underlying question)`
+    );
+  }
   return lines.join('\n');
 }
 
@@ -1163,6 +1178,20 @@ async function main() {
             console.error(
               `\n  → calling Claude for ${allAiFields.length} question(s) (free-text + multiple-choice, this can take 10-30s)...`
             );
+            // Log every outgoing choice-question with its real option list —
+            // confirms exactly what Claude received, instead of assuming.
+            // Free-text questions aren't logged here (no options to show);
+            // their raw answers are already logged after the call returns.
+            for (const q of questions) {
+              if (Array.isArray(q.options)) {
+                console.error(
+                  `  [debug] sending ${q.id} (choice): "${q.question.slice(0, 60)}" options=${JSON.stringify(q.options)}`
+                );
+              }
+            }
+            if (preferencesText) {
+              console.error(`  [debug] preferences sent:\n${preferencesText.replace(/^/gm, '    ')}`);
+            }
             try {
               const { text, usage } = runClaudeBatch(prompt);
               aiCallsUsed++;

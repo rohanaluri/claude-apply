@@ -136,3 +136,10 @@ salary_expectation: '$100,000–$125,000'
 # us" phrasing varies a lot (e.g. Epoch AI's real option was "AI or internet
 # search"). Claude matches this against whatever the real options are.
 referral_source: internet / online search
+
+# Whether to consent to the application being shared with related
+# groups/partner organizations for referrals — appears worded many different
+# ways per company ("share your info with related groups", "referral
+# consent", etc.). Claude matches this concept semantically, same as
+# referral_source above.
+share_info_consent: true
