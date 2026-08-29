@@ -42,6 +42,17 @@ const OPTIONAL_FIELDS = [
   'digest_sheet_name',
   'digest_min_score',
   'target_locations',
+  // Application-preference fields (2026-08-27) — grounding for Phase 4's
+  // AI-answered dropdown/radio path (unrecognized questions with real
+  // on-page options, e.g. relocation willingness, referral source) and for
+  // a few fields with clean, deterministic answers (work_authorized).
+  'work_authorized',
+  'relocation_flexible',
+  'preferred_hours_per_week',
+  'remote_preference',
+  'willing_to_travel_percent',
+  'salary_expectation',
+  'referral_source',
 ];
 
 function validateEducationEntry(e, i) {
@@ -132,6 +143,61 @@ export function validateProfile(profile) {
       !/^\d{4}-\d{2}-\d{2}$/.test(profile.min_start_date)
     ) {
       errors.push('min_start_date must be a YYYY-MM-DD string');
+    }
+  }
+  if (profile.work_authorized !== undefined && profile.work_authorized !== null) {
+    if (typeof profile.work_authorized !== 'boolean') {
+      errors.push('work_authorized must be a boolean (true/false)');
+    }
+  }
+  if (profile.relocation_flexible !== undefined && profile.relocation_flexible !== null) {
+    if (typeof profile.relocation_flexible !== 'boolean') {
+      errors.push('relocation_flexible must be a boolean (true/false)');
+    }
+  }
+  if (
+    profile.preferred_hours_per_week !== undefined &&
+    profile.preferred_hours_per_week !== null
+  ) {
+    if (
+      typeof profile.preferred_hours_per_week !== 'number' ||
+      profile.preferred_hours_per_week <= 0 ||
+      profile.preferred_hours_per_week > 168
+    ) {
+      errors.push('preferred_hours_per_week must be a number between 1 and 168');
+    }
+  }
+  if (
+    profile.willing_to_travel_percent !== undefined &&
+    profile.willing_to_travel_percent !== null
+  ) {
+    if (
+      typeof profile.willing_to_travel_percent !== 'number' ||
+      profile.willing_to_travel_percent < 0 ||
+      profile.willing_to_travel_percent > 100
+    ) {
+      errors.push('willing_to_travel_percent must be a number between 0 and 100');
+    }
+  }
+  if (profile.remote_preference !== undefined && profile.remote_preference !== null) {
+    if (!Array.isArray(profile.remote_preference)) {
+      errors.push('remote_preference must be an array of strings, in priority order');
+    } else {
+      profile.remote_preference.forEach((r, i) => {
+        if (typeof r !== 'string' || r.trim() === '') {
+          errors.push(`remote_preference[${i}] must be a non-empty string`);
+        }
+      });
+    }
+  }
+  if (profile.salary_expectation !== undefined && profile.salary_expectation !== null) {
+    if (typeof profile.salary_expectation !== 'string' || profile.salary_expectation.trim() === '') {
+      errors.push('salary_expectation must be a non-empty string');
+    }
+  }
+  if (profile.referral_source !== undefined && profile.referral_source !== null) {
+    if (typeof profile.referral_source !== 'string' || profile.referral_source.trim() === '') {
+      errors.push('referral_source must be a non-empty string');
     }
   }
   const known = new Set([...REQUIRED_FIELDS, ...OPTIONAL_FIELDS]);
