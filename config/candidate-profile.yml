@@ -16,7 +16,10 @@ website_url: https://alice-martin.example.com
 
 # --- Address ---
 city: Paris
-country: France
+# 2026-08-27: US country preference confirmed for job-search targeting —
+# see target_locations below. city stays Paris (placeholder, unrelated to
+# where you're applying to work) until real profile data replaces it.
+country: United States
 postal_code: '75001'
 
 # --- Education ---
@@ -46,6 +49,12 @@ experiences:
 # --- Work authorization ---
 work_authorization: EU citizen — no sponsorship needed
 requires_sponsorship: false
+# 2026-08-27: real, deterministic answer for Yes/No "are you legally
+# authorized to work in the country stated above?" radio questions — a
+# separate concept from work_authorization above, which is a descriptive
+# sentence chooseOption() can't map to a Yes/No option. See Decision #27's
+# follow-up (work_auth boolean mapping) in the architecture doc.
+work_authorized: true
 
 # --- Availability ---
 availability_start: '2026-09-01'
@@ -69,9 +78,11 @@ other_document_path: null # any additional document
 auto_apply_min_score: 8
 
 # --- EEO (optional; leave null to answer "Prefer not to say") ---
-gender: null
-ethnicity: null
-veteran_status: null
+# Values confirmed 2026-08-27. ethnicity: "Asian" per US EEOC categories,
+# which group South Asian/Indian under this single standardized category.
+gender: Male
+ethnicity: Asian
+veteran_status: not a veteran
 disability_status: null
 
 # --- Scoring hints (optional) ---
@@ -81,7 +92,7 @@ min_start_date: '2026-08-24'
 
 # --- Geographic targeting (optional) ---
 # Used by /scan to filter offers by location. Case-insensitive substring match.
-# When absent, derived from city + country above → ["France", "Paris", "Remote"].
+# When absent, derived from city + country above → ["United States", "Paris", "Remote"].
 # Overridden here (POC step) so real US-based Lever postings (PointClickCare,
 # Analytic Partners) used to prove the end-to-end pipeline actually survive
 # the location filter instead of being silently dropped like the stale
@@ -91,3 +102,37 @@ target_locations:
   - United States
   - USA
 digest_sheet_id: '1G1SXo_Xac0meQueYGLfl04nYxcRrPHHJ6W5_-uqktQc'
+
+# --- Application-preference fields (added 2026-08-27) ---
+# Grounding for Phase 4's AI-answered dropdown/radio path — used when an
+# application asks an unrecognized multiple-choice question (e.g. relocation
+# willingness, referral source) whose exact option wording varies by company.
+# Claude sees the real on-page options and picks the best match using these
+# values as context; it never invents an option that isn't actually on the
+# page. See src/apply/index.mjs's AI-answered-choice logic.
+
+# Willing to relocate for a role. When a form offers multiple distinct "Yes"
+# options (e.g. "Yes, to those timezones" vs "Yes, to the Bay Area"), Claude
+# picks the one it judges best-fitting — always reviewed before the Step E
+# tripwire, so a wrong pick among equally-true options is caught before submit.
+relocation_flexible: true
+
+preferred_hours_per_week: 40
+
+# In priority order — first entry is the most preferred. Used for AI-answered
+# "remote/hybrid/onsite preference" questions when phrasing doesn't exactly
+# match a deterministic classifier rule.
+remote_preference:
+  - onsite
+  - hybrid
+
+willing_to_travel_percent: 85
+
+# Free-text, not a literal dropdown value — used as grounding for salary
+# questions, whatever the on-page format (single field, range, dropdown).
+salary_expectation: '$100,000–$125,000'
+
+# General concept, not a literal dropdown value — "how did you hear about
+# us" phrasing varies a lot (e.g. Epoch AI's real option was "AI or internet
+# search"). Claude matches this against whatever the real options are.
+referral_source: internet / online search
