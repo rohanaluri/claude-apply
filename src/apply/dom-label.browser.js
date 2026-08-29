@@ -6,19 +6,16 @@
 
 function extractLabel(el) {
   if (!el) return '';
-  var isChoice = el.type === 'radio' || el.type === 'checkbox';
-  if (isChoice) {
-    var qLever = el.closest && el.closest('.application-question');
-    if (qLever) {
-      var lt = qLever.querySelector('.text, .application-question-text');
-      if (lt && lt.textContent && lt.textContent.trim()) return lt.textContent.trim();
-    }
-    var qAsh = el.closest && el.closest('[data-qa="question"]');
-    if (qAsh) {
-      var at = qAsh.querySelector('[data-qa="label"]');
-      if (at && at.textContent && at.textContent.trim()) return at.textContent.trim();
-    }
-  }
+
+  // Try a label that wraps or targets THIS SPECIFIC element first. For a
+  // radio/checkbox, this is normally the option's own text (e.g. "Yes"), not
+  // the enclosing question. Checked BEFORE the question-level fallback below —
+  // confirmed 2026-08-27, live test on Epoch AI: the old order made EVERY
+  // option under a question return the identical question text (e.g. both
+  // "Yes" and "No" radios under "Are you legally authorized...?" returned
+  // "Are you legally authorized...?"), because the question-level check ran
+  // first and returned immediately, before ever reaching this correct,
+  // option-specific lookup.
   if (el.id) {
     var _win = el.ownerDocument && el.ownerDocument.defaultView;
     var _cssEscape =
@@ -38,6 +35,24 @@ function extractLabel(el) {
     const t = wrap.textContent.trim();
     if (t) return t;
   }
+
+  // Question-level fallback for radio/checkbox — only reached when no direct
+  // label was found above (e.g. a radio with no wrapping <label> and no
+  // matching label[for]).
+  var isChoice = el.type === 'radio' || el.type === 'checkbox';
+  if (isChoice) {
+    var qLever = el.closest && el.closest('.application-question');
+    if (qLever) {
+      var lt = qLever.querySelector('.text, .application-question-text');
+      if (lt && lt.textContent && lt.textContent.trim()) return lt.textContent.trim();
+    }
+    var qAsh = el.closest && el.closest('[data-qa="question"]');
+    if (qAsh) {
+      var at = qAsh.querySelector('[data-qa="label"]');
+      if (at && at.textContent && at.textContent.trim()) return at.textContent.trim();
+    }
+  }
+
   const aria = el.getAttribute && el.getAttribute('aria-label');
   if (aria && aria.trim()) return aria.trim();
   const ariaBy = el.getAttribute && el.getAttribute('aria-labelledby');
