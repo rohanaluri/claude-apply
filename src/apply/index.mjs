@@ -27,6 +27,16 @@
  *   NOT attempt to solve or bypass it, and never exits/restarts on this path; you
  *   solve it in the browser and the run continues on its own.
  *
+ * AI-ANSWERED CHOICE QUESTIONS (added 2026-08-27)
+ *   Some dropdowns/radios have no fixed classifier rule and no deterministic
+ *   profile mapping — their exact wording and options vary too much per company
+ *   (e.g. "how did you hear about us", relocation willingness). These are now
+ *   routed to the SAME batched AI call as free-text questions, but with the
+ *   REAL on-page options attached — Claude picks exactly one of them (or
+ *   declines), never invents new text. Grounded by the profile's new
+ *   application-preference fields (relocation_flexible, salary_expectation,
+ *   etc.) alongside the CV. See buildAiPrompt() and planFields().
+ *
  * PREREQ
  *   Chrome running with --remote-debugging-port=9222 (the `chrome-apply` alias).
  *
@@ -157,6 +167,7 @@ const RADIO_INVALID_KEYS = new Set([
   'linkedin',
   'github',
   'website',
+  'country', // added 2026-08-27 alongside the new 'country' classifier rule
   'full_name',
   'first_name',
   'last_name',
@@ -177,7 +188,63 @@ const RADIO_INVALID_KEYS = new Set([
   ...UPLOAD_KEYS,
 ]);
 
+/**
+ * Maps an eeo_* classKey to the raw profile field backing it, so planFields()
+ * can tell whether the candidate actually set a value or is falling back to
+ * mapProfileValue()'s default "Prefer not to say" string. See the EEO
+ * select-decline handling in planFields() below.
+ */
+const EEO_PROFILE_KEYS = {
+  eeo_gender: 'gender',
+  eeo_ethnicity: 'ethnicity',
+  eeo_veteran: 'veteran_status',
+  eeo_disability: 'disability_status',
+};
+
 // ────────────────────────────────────────────────── pure helpers (tested) ────
+
+/** Accent-insensitive, case-insensitive, trimmed text comparison. Shared by
+ * chooseOption() (radio-group matching) and the AI-choice answer matching
+ * below, so both use identical, predictable normalization. */
+const normText = (s) =>
+  String(s ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+/** True if `o` reads as a "prefer not to say"-style decline option, in
+ * whatever exact wording a given company uses. Shared by chooseOption()
+ * (radio-groups) and planFields()'s EEO select-decline handling. */
+const isDeclineOption = (o) => /prefer not to (say|answer|disclose)|decline to|do not wish/i.test(o);
+
+/**
+ * Shared "smart" text matcher: exact match, then UNAMBIGUOUS prefix match,
+ * then UNAMBIGUOUS substring match. Returns the real option string or null —
+ * never guesses when multiple options plausibly match. Used by both
+ * chooseOption() (radio-groups) and fillSimple()'s <select> handling, so a
+ * profile value like "Asian" reliably matches a real option like "Asian (Not
+ * Hispanic or Latino)" the same way in BOTH field types, not just radios.
+ * Before 2026-08-27, <select> only did exact-string matching (a deliberate
+ * fast-fail choice to avoid Playwright hanging on selectOption() — see
+ * fillSimple()) — but that meant a real, correctly-set profile value like
+ * "Asian" or "not a veteran" still failed to match a slightly longer real
+ * option and fell to review, even though a human would obviously see it as
+ * the right answer. This stays just as fast as exact-match, since it's pure
+ * in-memory string comparison — no page interaction, so no hang risk.
+ */
+function matchOptionText(options, desired) {
+  const want = normText(desired);
+  if (want === '') return null;
+  const exact = options.find((o) => normText(o) === want);
+  if (exact) return exact;
+  const starts = options.filter((o) => normText(o).startsWith(want));
+  if (starts.length === 1) return starts[0];
+  if (starts.length > 1) return null;
+  const contains = options.filter((o) => normText(o).includes(want));
+  if (contains.length === 1) return contains[0];
+  return null;
+}
 
 /**
  * Classify a button's text. Submit always takes precedence over next.
@@ -201,19 +268,11 @@ export const isNextButton = (t) => classifyButton(t) === 'next';
  */
 export function chooseOption(options, desired, classKey = '') {
   if (!Array.isArray(options) || options.length === 0) return null;
-  const norm = (s) =>
-    String(s ?? '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .trim();
-
-  const want = norm(desired);
+  const want = normText(desired);
 
   // EEO fields with no explicit profile value must land on a decline option.
-  const isDecline = (o) => /prefer not to (say|answer|disclose)|decline to|do not wish/i.test(o);
   if (classKey.startsWith('eeo_') && (want === '' || want === 'prefer not to say')) {
-    return options.find(isDecline) ?? null;
+    return options.find(isDeclineOption) ?? null;
   }
   if (want === '') return null;
 
@@ -223,30 +282,43 @@ export function chooseOption(options, desired, classKey = '') {
   if (want === 'yes' || want === 'true') return yes ?? null;
   if (want === 'no' || want === 'false') return no ?? null;
 
-  const exact = options.find((o) => norm(o) === want);
-  if (exact) return exact;
-
-  // Prefix and substring matches must be UNAMBIGUOUS. If two options both match
-  // (e.g. "Master of Science" / "Master of Arts" for "Master"), we return null so
-  // the field is flagged for human review rather than silently guessed.
-  const starts = options.filter((o) => norm(o).startsWith(want));
-  if (starts.length === 1) return starts[0];
-  if (starts.length > 1) return null;
-
-  const contains = options.filter((o) => norm(o).includes(want));
-  if (contains.length === 1) return contains[0];
-
-  return null;
+  return matchOptionText(options, desired);
 }
 
-/** Build the single batched prompt for all AI-answered questions. */
-export function buildAiPrompt({ company, role, language, jdText, cvMd, questions }) {
+/**
+ * Build the single batched prompt for all AI-answered questions — both
+ * open-ended free-text questions and AI-answered CHOICE questions (an
+ * unrecognized dropdown/radio with real on-page options attached).
+ *
+ * `questions[i].options`, when present, marks a question as multiple-choice:
+ * the model MUST answer with the exact text of one listed option (verified
+ * against the real list before ever touching the page — see main()'s
+ * ai-choice handling) or return an empty string if none genuinely fit.
+ * `preferences`, when present, is a plain-text block of the candidate's
+ * application preferences (relocation, salary, remote/onsite, etc.) — used as
+ * grounding for both question types, since a free-text salary question
+ * benefits from the same context as a multiple-choice relocation question.
+ */
+export function buildAiPrompt({ company, role, language, jdText, cvMd, questions, preferences }) {
   const list = questions
-    .map(
-      (q, i) =>
-        `${i + 1}. [id=${q.id}] ${q.question}${q.maxLength ? ` (max ${q.maxLength} chars)` : ''}`
-    )
+    .map((q, i) => {
+      const header = `${i + 1}. [id=${q.id}]`;
+      if (Array.isArray(q.options) && q.options.length) {
+        const optsList = q.options.map((o) => `"${o}"`).join(' | ');
+        return `${header} (MULTIPLE CHOICE — answer with the EXACT text of ONE option: ${optsList}) ${q.question}`;
+      }
+      return `${header} ${q.question}${q.maxLength ? ` (max ${q.maxLength} chars)` : ''}`;
+    })
     .join('\n');
+
+  const prefsBlock = preferences
+    ? [
+        `CANDIDATE PREFERENCES (use as grounding for relevant questions — relocation,`,
+        `hours, remote/onsite, travel, salary, referral source, etc.):`,
+        preferences,
+        ``,
+      ].join('\n')
+    : '';
 
   return [
     `You are helping a candidate complete ONE job application.`,
@@ -261,13 +333,16 @@ export function buildAiPrompt({ company, role, language, jdText, cvMd, questions
     `CANDIDATE CV:`,
     (cvMd || '').slice(0, 4000),
     ``,
+    prefsBlock,
     `QUESTIONS TO ANSWER:`,
     list,
     ``,
     `RULES:`,
-    `- Ground every claim in the CV above. NEVER invent experience, employers, or skills.`,
-    `- 80-150 words per answer unless a max length is given.`,
-    `- If the CV genuinely lacks the basis to answer, return an empty string for that id.`,
+    `- Ground every claim in the CV and preferences above. NEVER invent experience, employers, or skills.`,
+    `- For MULTIPLE CHOICE questions, the PREFERENCES block is sufficient grounding on its own — you do NOT need separate CV evidence. If a preference clearly corresponds to one of the real options (e.g. "referral source: internet search" and an option literally says "AI or internet search"), select it confidently.`,
+    `- For MULTIPLE CHOICE questions: your answer MUST be the exact text of one listed option — never invent a new option, never combine options, never add extra words. If none of the options genuinely fit, return an empty string for that id.`,
+    `- For open-ended questions: 80-150 words per answer unless a max length is given.`,
+    `- If the CV/preferences genuinely lack the basis to answer, return an empty string for that id.`,
     ``,
     `Return ONLY valid JSON, no markdown fences, no preamble:`,
     `{"answers": {"<id>": "<answer text>"}}`,
@@ -367,7 +442,52 @@ export function planFields(fields, profile) {
       return { ...f, classKey, action: 'ai', question: labelForClass || f.placeholder || '' };
     }
 
-    const value = mapProfileValue(classKey, profile);
+    // Added 2026-08-27: unrecognized multiple-choice questions (a radio-group
+    // OR a <select> with real options) get routed to the AI with the REAL
+    // on-page options attached — never a free-text guess, never an invented
+    // choice. Wording for these varies a lot per company (e.g. "how did you
+    // hear about us", relocation willingness) so no fixed classifier rule
+    // could reliably cover them all. Only applies when classKey is genuinely
+    // unrecognized AND the field actually has real options to choose from —
+    // an unknown plain text field with nothing to pick from still falls
+    // through to the ordinary 'review' path further below.
+    if (classKey === 'unknown') {
+      const choiceOptions =
+        f.kind === 'radio-group' ? f.options : f.tag === 'select' ? f.selectOptions : null;
+      if (Array.isArray(choiceOptions) && choiceOptions.length > 0) {
+        return {
+          ...f,
+          classKey,
+          action: 'ai-choice',
+          question: labelForClass || f.placeholder || '',
+          options: choiceOptions,
+        };
+      }
+    }
+
+    let value = mapProfileValue(classKey, profile);
+
+    // Added 2026-08-27: EEO select-dropdown decline fallback. mapProfileValue()'s
+    // default for an unset EEO field is the literal string "Prefer not to
+    // say", which rarely matches a real <select>'s actual decline-option
+    // wording (e.g. Lever's "Decline to self-identify") — fillSimple()'s
+    // exact-match check then correctly fails fast rather than guessing, but
+    // that meant every unset EEO select silently needed manual review even
+    // when a perfectly good decline option existed on the page. Reuses the
+    // same decline-detection regex chooseOption() already applies to
+    // radio-groups, so a <select> gets the same treatment. Only kicks in when
+    // the candidate genuinely never set the underlying profile field — an
+    // explicit value (e.g. gender: Male) is left alone and matched normally.
+    if (
+      EEO_PROFILE_KEYS[classKey] &&
+      !profile[EEO_PROFILE_KEYS[classKey]] &&
+      f.kind === 'simple' &&
+      f.tag === 'select' &&
+      Array.isArray(f.selectOptions)
+    ) {
+      const declineOpt = f.selectOptions.find(isDeclineOption);
+      if (declineOpt) value = declineOpt;
+    }
 
     if (f.kind === 'radio-group') {
       const choice = chooseOption(f.options, value, classKey);
@@ -473,21 +593,21 @@ async function fillSimple(page, field, value) {
   const sel = `[data-ca-idx="${field.idx}"]`;
 
   if (field.tag === 'select' && !field.isReactSelect) {
-    // Check for a REAL matching option before attempting to select it.
-    // page.selectOption() doesn't fail fast when nothing matches — it quietly
-    // retries internally for its own timeout (default ~30s), which is what
-    // caused fields with a bad/mismatched value (e.g. a misclassified field
-    // fed a date instead of a country, or an EEO default like "Prefer not to
-    // say" that doesn't match this site's actual "Decline to self-identify"
-    // wording) to look like a hang. Checking first means a genuine mismatch
-    // fails in milliseconds, with a clear reason, instead of stalling.
-    const desired = String(value).trim().toLowerCase();
+    // Check for a REAL matching option before attempting to select it —
+    // page.selectOption() doesn't fail fast when nothing matches, it quietly
+    // retries internally for its own timeout (default ~30s), which looks
+    // identical to a hang. matchOptionText() does exact/prefix/substring
+    // matching in-memory (same logic chooseOption() uses for radio-groups,
+    // see 2026-08-27), so a genuine value like "Asian" correctly matches a
+    // real option like "Asian (Not Hispanic or Latino)" — while a truly
+    // unrelated value still fails in milliseconds with a clear reason
+    // instead of stalling.
     const optionTexts = await page
       .locator(sel)
       .evaluate((el) => Array.from(el.options).map((o) => o.textContent.trim()));
-    const matchIdx = optionTexts.findIndex((o) => o.trim().toLowerCase() === desired);
-    if (matchIdx === -1) return false;
-    await page.selectOption(sel, { label: optionTexts[matchIdx] });
+    const matched = matchOptionText(optionTexts, value);
+    if (!matched) return false;
+    await page.selectOption(sel, { label: matched });
     return true;
   }
 
@@ -778,6 +898,34 @@ function runClaudeBatch(prompt) {
   return { text: parsed.result || '', usage: parsed.usage || {} };
 }
 
+/**
+ * Builds a plain-text grounding block from the profile's application-preference
+ * fields (added 2026-08-27), for use in the AI prompt. Only includes fields
+ * that are actually set — an absent field is simply omitted, not guessed.
+ */
+function buildPreferencesText(profile) {
+  const lines = [];
+  if (profile.relocation_flexible !== undefined && profile.relocation_flexible !== null) {
+    lines.push(`Willing to relocate: ${profile.relocation_flexible ? 'Yes' : 'No'}`);
+  }
+  if (profile.preferred_hours_per_week) {
+    lines.push(`Preferred hours/week: ${profile.preferred_hours_per_week}`);
+  }
+  if (Array.isArray(profile.remote_preference) && profile.remote_preference.length) {
+    lines.push(`Remote/onsite preference (priority order): ${profile.remote_preference.join(', ')}`);
+  }
+  if (profile.willing_to_travel_percent !== undefined && profile.willing_to_travel_percent !== null) {
+    lines.push(`Willing to travel: ${profile.willing_to_travel_percent}%`);
+  }
+  if (profile.salary_expectation) {
+    lines.push(`Salary expectation: ${profile.salary_expectation}`);
+  }
+  if (profile.referral_source) {
+    lines.push(`How they typically find/hear about jobs: ${profile.referral_source}`);
+  }
+  return lines.join('\n');
+}
+
 // ────────────────────────────────────────────────────────────────── main ────
 
 function parseArgs(argv) {
@@ -817,6 +965,7 @@ async function main() {
     process.exit(1);
   }
   const cvMd = fs.existsSync('config/cv.md') ? fs.readFileSync('config/cv.md', 'utf8') : '';
+  const preferencesText = buildPreferencesText(profile);
   console.error('✓ profile + cv.md loaded');
 
   // --- browser ---
@@ -966,10 +1115,12 @@ async function main() {
             errors.push(`${p.classKey}: ${e.message}`);
           }
 
-          // AI-answered fields aren't touched here — they're filled after the
-          // batched Claude call below, where they get logged for real. Logging
-          // them here printed a premature, empty line before any answer existed.
-          if (p.action !== 'ai') logFieldResult(p);
+          // AI-answered fields (both free-text 'ai' and choice-question
+          // 'ai-choice') aren't touched here — they're filled after the
+          // batched Claude call below, where they get logged for real.
+          // Logging them here printed a premature, empty line before any
+          // answer existed.
+          if (p.action !== 'ai' && p.action !== 'ai-choice') logFieldResult(p);
 
           // Check after EVERY field, not just once per step. hCaptcha can
           // trigger reactively mid-burst — a single per-step check can land
@@ -978,21 +1129,27 @@ async function main() {
           if (await stopIfBlocked(`step ${step}, field "${p.classKey}"`)) return;
         }
 
-        // 2. ONE batched AI call for this step's free-text questions
+        // 2. ONE batched AI call for this step's free-text AND AI-choice questions
         const aiFields = plan.filter((p) => p.action === 'ai' && p.question);
-        if (aiFields.length) {
+        const aiChoiceFields = plan.filter((p) => p.action === 'ai-choice' && p.question);
+        const allAiFields = [...aiFields, ...aiChoiceFields];
+
+        if (allAiFields.length) {
           if (aiCallsUsed >= args.maxAiCalls) {
-            aiFields.forEach((p) => {
+            allAiFields.forEach((p) => {
               p.action = 'review';
               p.reason = 'AI call budget exhausted';
             });
-            log.push(`skipped ${aiFields.length} AI field(s): budget exhausted`);
-            console.error(`  [review] ✗ ${aiFields.length} free-text field(s) skipped — AI call budget exhausted`);
+            log.push(`skipped ${allAiFields.length} AI field(s): budget exhausted`);
+            console.error(
+              `  [review] ✗ ${allAiFields.length} AI-answered field(s) skipped — AI call budget exhausted`
+            );
           } else {
-            const questions = aiFields.map((p, i) => ({
+            const questions = allAiFields.map((p) => ({
               id: `q${p.idx}`,
               question: p.question,
               maxLength: p.maxLength,
+              options: p.action === 'ai-choice' ? p.options : undefined,
             }));
             const prompt = buildAiPrompt({
               company,
@@ -1001,9 +1158,10 @@ async function main() {
               jdText: meta.body,
               cvMd,
               questions,
+              preferences: preferencesText,
             });
             console.error(
-              `\n  → calling Claude for ${aiFields.length} free-text question(s) (this can take 10-30s)...`
+              `\n  → calling Claude for ${allAiFields.length} question(s) (free-text + multiple-choice, this can take 10-30s)...`
             );
             try {
               const { text, usage } = runClaudeBatch(prompt);
@@ -1011,22 +1169,59 @@ async function main() {
               const { answers, parseError } = parseAiResponse(text);
               if (parseError) errors.push('AI response was not valid JSON');
               log.push(
-                `AI call ${aiCallsUsed}: ${aiFields.length} question(s), usage=${JSON.stringify(usage)}`
+                `AI call ${aiCallsUsed}: ${allAiFields.length} question(s), usage=${JSON.stringify(usage)}`
               );
               console.error(
                 `  ✓ AI responded (usage=${JSON.stringify(usage)})${parseError ? ' — WARNING: response was not valid JSON' : ''}`
               );
-              for (const p of aiFields) {
+              // Raw answers, printed verbatim before any matching/filling
+              // happens — this is what makes a "AI returned no answer" or a
+              // mismatch diagnosable: without this, there was no way to tell
+              // whether Claude genuinely returned nothing, returned an empty
+              // string on purpose, or returned real text that just didn't
+              // match a real option (see the per-field reason below for that
+              // last case specifically).
+              console.error(`  raw AI answers: ${JSON.stringify(answers)}`);
+              for (const p of allAiFields) {
                 const ans = answers[`q${p.idx}`];
-                if (ans && String(ans).trim()) {
-                  const ok = await withTimeout(fillSimple(page, p, ans), FIELD_TIMEOUT_MS, p.classKey);
-                  p.action = ok ? 'filled-ai' : 'review';
-                  if (!ok) p.reason = 'AI answer fill failed';
-                  else p.value = ans;
+
+                if (p.action === 'ai-choice') {
+                  // Only ever fill an option that's ACTUALLY on the page —
+                  // never trust the model's text blindly. Matched with the
+                  // same normalization chooseOption() uses for radio-groups.
+                  const matched = Array.isArray(p.options)
+                    ? p.options.find((o) => normText(o) === normText(ans))
+                    : null;
+                  if (matched) {
+                    const ok =
+                      p.kind === 'radio-group'
+                        ? await withTimeout(fillRadio(page, p, matched), FIELD_TIMEOUT_MS, p.classKey)
+                        : await withTimeout(fillSimple(page, p, matched), FIELD_TIMEOUT_MS, p.classKey);
+                    p.action = ok ? 'filled-ai' : 'review';
+                    if (ok) p.value = matched;
+                    else p.reason = 'AI-selected option fill failed';
+                  } else {
+                    p.action = 'review';
+                    // Includes the raw text Claude returned (if any) so a
+                    // mismatch is diagnosable from the summary alone —
+                    // previously this just said "did not match," with no way
+                    // to tell what the model actually said.
+                    p.reason = ans
+                      ? `AI answered "${ans}" — no matching option on the page`
+                      : 'AI returned no answer';
+                  }
                 } else {
-                  p.action = 'review';
-                  p.reason = 'AI returned no answer';
+                  if (ans && String(ans).trim()) {
+                    const ok = await withTimeout(fillSimple(page, p, ans), FIELD_TIMEOUT_MS, p.classKey);
+                    p.action = ok ? 'filled-ai' : 'review';
+                    if (!ok) p.reason = 'AI answer fill failed';
+                    else p.value = ans;
+                  } else {
+                    p.action = 'review';
+                    p.reason = 'AI returned no answer';
+                  }
                 }
+
                 logFieldResult(p);
                 // Same per-field check as the deterministic-fill loop above —
                 // AI answers also involve real typing/DOM interaction, so the
@@ -1035,7 +1230,7 @@ async function main() {
               }
             } catch (e) {
               console.error(`  ✗ AI call failed: ${e.message}`);
-              aiFields.forEach((p) => {
+              allAiFields.forEach((p) => {
                 p.action = 'review';
                 p.reason = `AI call failed: ${e.message}`;
                 logFieldResult(p);

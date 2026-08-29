@@ -191,6 +191,17 @@ const RULES = [
   { key: 'eeo_ethnicity', when: (f) => test_norm(/ethnicity|race/, f.label, f.name) },
   { key: 'eeo_veteran', when: (f) => test_norm(/veteran/, f.label, f.name) },
   { key: 'eeo_disability', when: (f) => test_norm(/disability|handicap/, f.label, f.name) },
+  // Added 2026-08-27: catches both a plain residential "Country" address field
+  // and application-specific phrasing like "Which country do you intend to
+  // primarily work from?" — the profile has one country field, and both
+  // questions map to it. Deliberately placed LAST among the specific-key
+  // rules (moved here after live testing caught it stealing a match from
+  // work_auth's "...in the country you have stated above?" phrasing when
+  // positioned earlier) — "country" is too common a word to risk running
+  // before more specific rules get a chance. RADIO_INVALID_KEYS in
+  // apply/index.mjs additionally guards this key against the same
+  // long-paragraph false-positive risk as email/phone for radio-groups.
+  { key: 'country', when: (f) => test_norm(/\bcountry\b/, f.label, f.name) },
   // FIX 3 (2026-08-20 POC): short open-ended TEXT inputs (not just <textarea>) were
   // silently falling through to 'unknown' and getting skipped rather than routed to
   // the AI free-text step. This catches text inputs whose label reads like a genuine
@@ -227,6 +238,8 @@ export function mapProfileValue(classKey, profile, opts = {}) {
     linkedin: profile.linkedin_url,
     github: profile.github_url,
     website: profile.website_url,
+    // Added 2026-08-27, alongside the new 'country' classifier rule above.
+    country: profile.country,
     education_school: edu.school ?? profile.school,
     education_degree: edu.degree ?? profile.degree,
     education_field: edu.field,
@@ -238,7 +251,17 @@ export function mapProfileValue(classKey, profile, opts = {}) {
     experience_start: exp.start,
     experience_end: exp.end,
     experience_summary: exp.description,
-    work_auth: profile.work_authorization,
+    // Changed 2026-08-27: was `profile.work_authorization` (a descriptive
+    // sentence, e.g. "EU citizen — no sponsorship needed"), which never
+    // matched a Yes/No radio's actual options — chooseOption() only
+    // recognizes literal yes/no/true/false as boolean signals, so this
+    // question always fell to "no confident option match" review. Now reads
+    // the new dedicated boolean field instead, mirroring the existing
+    // `sponsorship` pattern below. Falls through to `undefined` (→ "no
+    // profile value" review) if work_authorized was never set, same
+    // conservative behavior as everywhere else rather than guessing.
+    work_auth:
+      profile.work_authorized === true ? 'Yes' : profile.work_authorized === false ? 'No' : undefined,
     sponsorship: profile.requires_sponsorship ? 'Yes' : 'No',
     availability: profile.availability_start,
     eeo_gender: profile.gender ?? 'Prefer not to say',
