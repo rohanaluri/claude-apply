@@ -138,7 +138,7 @@ remote_preference:
   - hybrid
   - onsite
 
-willing_to_travel_percent: null # PLACEHOLDER — Rohan to confirm a rough %, see note above
+willing_to_travel_percent: 65 # midpoint of stated 60-70% range
 
 salary_expectation: '$110,000–$130,000'
 
