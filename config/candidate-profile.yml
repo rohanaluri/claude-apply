@@ -1,145 +1,147 @@
 # Candidate profile — used by /scan, /score, and /apply.
-# Copy this file to config/candidate-profile.yml and fill in your details.
-# NEVER commit config/candidate-profile.yml (it is in .gitignore).
+# NEVER commit config/candidate-profile.yml (it is in .gitignore) — per 2026-09-03
+# discussion, Rohan has explicitly opted to force-commit this despite containing
+# real personal data (Decision #22 precedent). His call, made knowingly.
 
 # --- Identity ---
-first_name: Alice
-last_name: Martin
-email: alice.martin@example.com
-phone: '+33600000000'
-date_of_birth: '2003-05-15'
-nationality: French
+first_name: Rohan
+last_name: Aluri
+email: rohanaluri@gmail.com
+phone: '+16782835911'
+date_of_birth: null # not provided — leave null rather than guess
+nationality: American
 
-linkedin_url: https://www.linkedin.com/in/alice-martin-example/
-github_url: https://github.com/alice-martin-example
-website_url: https://alice-martin.example.com
+linkedin_url: https://linkedin.com/in/rohan-aluri-09316422b/
+github_url: https://github.com/rohanaluri/
+website_url: null
 
 # --- Address ---
-city: Paris
-# 2026-08-27: US country preference confirmed for job-search targeting —
-# see target_locations below. city stays Paris (placeholder, unrelated to
-# where you're applying to work) until real profile data replaces it.
+city: Atlanta
 country: United States
-postal_code: '75001'
+postal_code: null # not provided
 
 # --- Education ---
-school: Example University of Technology
-degree: MSc Computer Science
-graduation_year: 2028
-current_year: 2
+school: Georgia Institute of Technology
+degree: M.S. in Analytics
+graduation_year: 2026
+current_year: null # not specified — M.S. track, exact year-in-program unclear
 
 education:
-  - school: Example University of Technology
-    degree: MSc Computer Science
-    field: Machine Learning
-    start: '2023-09-01'
-    end: '2028-06-30'
-    description: Focus on ML systems, distributed computing, and applied research.
+  - school: Georgia Institute of Technology
+    degree: M.S. in Analytics
+    field: Computational Data Analytics
+    start: '2025-08-01' # approximate — not stated explicitly on resume
+    end: '2026-05-31'
+    description: >
+      GPA 4.0/4.0. Coursework: Statistical Modeling, Data & Visual Analytics,
+      Deep Learning, Deterministic Optimization, Database Systems.
+  - school: Georgia Institute of Technology
+    degree: B.S. in Industrial Engineering
+    field: Analytics & Data Science
+    start: '2021-08-01' # approximate — not stated explicitly on resume
+    end: '2025-05-31'
+    description: >
+      GPA 3.87/4.0. Coursework: Data Input/Manipulation, Machine Learning,
+      Statistical Methods, Decision & Data Analysis, Constraint Programming.
 
 # --- Experience ---
 experiences:
-  - company: Example ML Lab
-    title: Research Intern
-    start: '2025-06-01'
-    end: '2025-08-31'
+  - company: Automatic Data Processing (ADP)
+    title: Data Science/Machine Learning Intern
+    start: '2024-05-01'
+    end: '2024-08-31'
     description: |
-      Built a reproducible training pipeline for small language models,
-      improved eval throughput by 3x, shipped internal tool used by 10+ researchers.
+      Built a Databricks pipeline extracting employee data from payroll documents
+      into structured JSON. Developed 6 vendor-specific GPT-4 templates, achieving
+      92% accuracy vs. ground truth. Deployed AWS Lambda functions for real-time
+      extraction via API with S3 storage. Built a PyQt5 GUI for multi-document
+      input and extraction-status feedback.
+  - company: Epic Intentions Consulting
+    title: Senior Consultant
+    start: '2024-01-01'
+    end: '2024-05-31'
+    description: |
+      Developed a WordPress site for the HERO for Children organization,
+      streamlining unstructured text with Python (Pandas, NLTK). Optimized
+      UI/UX deployment, reducing hosting costs by 35%, and used Google
+      Analytics to analyze user navigation patterns.
+  - company: NCR Corporation
+    title: Product Management Intern
+    start: '2023-05-01'
+    end: '2023-08-31'
+    description: |
+      Created an Order Confirmation Index for 45 digital signage products.
+      Flagged SKUs with statistically significant decline via Mann-Kendall
+      trend test. Optimized self-checkout POS interaction via Monte Carlo
+      simulation, reducing kiosk process time by 3.6%. Presented findings
+      in Tableau to board directors during the intern exhibition.
+  - company: Georgia Institute of Technology
+    title: Undergraduate Research (with Dr. Nicoleta Serban)
+    start: '2022-01-01'
+    end: '2023-05-31'
+    description: |
+      Performed statistical analysis on opioid usage demographics within
+      Medicaid. Queried/processed MAX & TAF files from ResDAC via SQL,
+      merging multi-table datasets across 20,000+ patient records. Used SQL
+      CASE statements to organize socioeconomic data; visualized findings
+      via scatter plots and pie graphs in Seaborn.
 
 # --- Work authorization ---
-work_authorization: EU citizen — no sponsorship needed
+work_authorization: U.S. citizen — no sponsorship needed
 requires_sponsorship: false
-# 2026-08-27: real, deterministic answer for Yes/No "are you legally
-# authorized to work in the country stated above?" radio questions — a
-# separate concept from work_authorization above, which is a descriptive
-# sentence chooseOption() can't map to a Yes/No option. See Decision #27's
-# follow-up (work_auth boolean mapping) in the architecture doc.
 work_authorized: true
 
 # --- Availability ---
-availability_start: '2026-09-01'
-internship_duration_months: 6
+# 2 weeks from 2026-09-03 (today, at time of writing) — see note above the
+# file about this needing periodic manual updates.
+availability_start: '2026-09-17'
+internship_duration_months: null # not applicable — full-time job search
 
 # --- Languages ---
 languages:
-  - { code: fr, level: native }
-  - { code: en, level: C1 }
-  - { code: es, level: A2 }
+  - { code: en, level: native }
 
 # --- CV path (repo-relative recommended; absolute or ~/... also accepted) ---
 cv_path: config/cv.pdf
 
 # --- Optional document paths (repo-relative, absolute, or ~/... all accepted) ---
-transcript_path: null # releve de notes / academic transcript
-portfolio_path: null # portfolio / work samples
-other_document_path: null # any additional document
+transcript_path: null
+portfolio_path: null
+other_document_path: null
 
 # --- Auto-apply threshold (0..10) ---
-auto_apply_min_score: 8
+auto_apply_min_score: 6
 
 # --- EEO (optional; leave null to answer "Prefer not to say") ---
-# Values confirmed 2026-08-27. ethnicity: "Asian" per US EEOC categories,
-# which group South Asian/Indian under this single standardized category.
 gender: Male
 ethnicity: Asian
 veteran_status: not a veteran
-disability_status: null
+disability_status: 'No disabilities'
 
 # --- Scoring hints (optional) ---
-# Used by /scan and /score to filter out unwanted companies / too-early start dates.
 blacklist_companies: []
-min_start_date: '2026-08-24'
+min_start_date: '2026-09-17' # matches availability_start
 
 # --- Geographic targeting (optional) ---
-# Used by /scan to filter offers by location. Case-insensitive substring match.
-# When absent, derived from city + country above → ["United States", "Paris", "Remote"].
-# Overridden here (POC step) so real US-based Lever postings (PointClickCare,
-# Analytic Partners) used to prove the end-to-end pipeline actually survive
-# the location filter instead of being silently dropped like the stale
-# France/Paris default would do.
+# Kept as-is — "prefer to work in the United States" matches the existing list.
 target_locations:
   - Remote
   - United States
   - USA
 digest_sheet_id: '1G1SXo_Xac0meQueYGLfl04nYxcRrPHHJ6W5_-uqktQc'
 
-# --- Application-preference fields (added 2026-08-27) ---
-# Grounding for Phase 4's AI-answered dropdown/radio path — used when an
-# application asks an unrecognized multiple-choice question (e.g. relocation
-# willingness, referral source) whose exact option wording varies by company.
-# Claude sees the real on-page options and picks the best match using these
-# values as context; it never invents an option that isn't actually on the
-# page. See src/apply/index.mjs's AI-answered-choice logic.
-
-# Willing to relocate for a role. When a form offers multiple distinct "Yes"
-# options (e.g. "Yes, to those timezones" vs "Yes, to the Bay Area"), Claude
-# picks the one it judges best-fitting — always reviewed before the Step E
-# tripwire, so a wrong pick among equally-true options is caught before submit.
+# --- Application-preference fields ---
 relocation_flexible: true
+preferred_hours_per_week: 40 # assumed standard full-time — flag if this isn't right
 
-preferred_hours_per_week: 40
-
-# In priority order — first entry is the most preferred. Used for AI-answered
-# "remote/hybrid/onsite preference" questions when phrasing doesn't exactly
-# match a deterministic classifier rule.
 remote_preference:
-  - onsite
   - hybrid
+  - onsite
 
-willing_to_travel_percent: 85
+willing_to_travel_percent: null # PLACEHOLDER — Rohan to confirm a rough %, see note above
 
-# Free-text, not a literal dropdown value — used as grounding for salary
-# questions, whatever the on-page format (single field, range, dropdown).
-salary_expectation: '$100,000–$125,000'
+salary_expectation: '$110,000–$130,000'
 
-# General concept, not a literal dropdown value — "how did you hear about
-# us" phrasing varies a lot (e.g. Epoch AI's real option was "AI or internet
-# search"). Claude matches this against whatever the real options are.
 referral_source: internet / online search
 
-# Whether to consent to the application being shared with related
-# groups/partner organizations for referrals — appears worded many different
-# ways per company ("share your info with related groups", "referral
-# consent", etc.). Claude matches this concept semantically, same as
-# referral_source above.
 share_info_consent: true
