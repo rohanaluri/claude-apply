@@ -5,6 +5,12 @@
 # directly by `node src/scan/index.mjs` — zero LLM cost.
 #
 # Group B (custom career pages): handled via an agentic scanner (not in v0.1).
+#
+# NOTE (2026-09-03): Google, Amazon, Apple, Meta, Netflix, NVIDIA, and most
+# large banks run their OWN custom career sites — not Lever/Greenhouse/Ashby/
+# Workday. Group B (the only thing that could reach them) isn't built yet, so
+# they cannot be added here in a way that would actually work. This file can
+# only cover companies genuinely hosted on one of the 4 supported platforms.
 
 tracked_companies:
   - name: Mistral AI
@@ -17,6 +23,17 @@ tracked_companies:
     enabled: true
   - name: Analytic Partners
     careers_url: https://jobs.lever.co/analyticpartners
+    enabled: true
+  # Added 2026-09-03 — all three confirmed live via real capply test runs
+  # against the real (non-mock) candidate profile.
+  - name: Fliff
+    careers_url: https://jobs.lever.co/Fliff
+    enabled: true
+  - name: PadSplit
+    careers_url: https://jobs.lever.co/padsplit
+    enabled: true
+  - name: Aircall
+    careers_url: https://jobs.lever.co/aircall
     enabled: true
 
 title_filter:
@@ -49,10 +66,6 @@ title_filter:
 
   # When `required_any` is set, also match against the offer description
   # if the title alone doesn't contain one of the keywords. Default: [title].
-  # Setting [title, description] catches titles like "Research Scientist Intern"
-  # whose body mentions "Machine Learning" or "AI" but whose title does not.
-  # Only required_any is soft-matched — positive and negative remain title-only.
-  # Note: Workday descriptions are not fetched in v1 (soft match disabled there).
   required_any_in: [title]
 
 # Aggregator-based discovery (company-agnostic).
@@ -63,25 +76,19 @@ title_filter:
 #   /scan --source all            # tracked_companies + aggregators
 #   /scan                         # default — only tracked_companies
 #
-# Each entry is optional. Omit the whole `aggregators:` block to disable.
+# IMPORTANT: `capply`/scan need --source all (or a separate --source
+# aggregator run) to actually pick these up — the plain default `/scan` only
+# hits tracked_companies above. Update the Routine's run command accordingly.
 aggregators:
-  # Greenhouse public aggregator. Hits boards-api.greenhouse.io for a curated
-  # list of well-known boards. The default list ships with the project; you
-  # can override it via `boards: [{ slug, company }, …]`.
+  # Greenhouse public aggregator — RESTORED 2026-09-03 (was accidentally
+  # dropped in the previous edit). Hits boards-api.greenhouse.io for ~20
+  # well-known, pre-verified public boards shipped with the repo
+  # (src/scan/aggregators/known-greenhouse-boards.json): Anthropic, OpenAI,
+  # Stripe, Airbnb, DoorDash, Instacart, Shopify, GitLab, Datadog, Cloudflare,
+  # Discord, Figma, Notion, Vercel, Scale AI, Asana, DeepMind, Robinhood,
+  # Twitch, Reddit.
   greenhouse:
     enabled: true
-    # Optional pre-filter on title (whole word, case-insensitive). Most users
-    # leave this empty — title_filter above is applied AFTER the aggregator
-    # returns its raw list and is more powerful.
     keywords: []
-    # Optional pre-filter on location (substring, case-insensitive). Useful
-    # to short-circuit foreign offers BEFORE they hit the global filter.
     locations: []
-    # Optional cap on the total number of aggregator-derived offers returned
-    # in one scan. Default: no cap.
-    # limit: 200
-    # Optional override of the curated boards list. Keep the default for the
-    # broadest coverage; override only if you want to narrow the search.
-    # boards:
-    #   - { slug: anthropic, company: Anthropic }
-    #   - { slug: stripe, company: Stripe }
+    # boards: — left as default for broadest coverage
