@@ -133,12 +133,64 @@ ${bullets || '- (no reason returned)'}
 
 Apply:
 \`\`\`
-/apply ${j.url}
+capply "${j.url}"
 \`\`\`
 `;
   });
 
   return header + '\n' + blocks.join('\n');
+}
+
+// Escapes a string for safe interpolation into HTML text content.
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// HTML version of the digest — this is what actually gets sent as the email
+// body (added 2026-09-03). Mirrors the styling of the separate daily-news
+// Routine (dark title bar, light card, real <h2>/<ul>/<li>) so it renders
+// properly instead of showing raw Markdown characters. Requires the Gmail
+// Zap action's Body type to be set to HTML, not Plain — see Open Items.
+export function buildDigestHtml(jobs, today) {
+  if (jobs.length === 0) return null;
+
+  const jobBlocks = jobs
+    .map((j) => {
+      const bullets = reasonBullets(j.reason)
+        .map((b) => `<li>${escapeHtml(b)}</li>`)
+        .join('\n        ');
+      const locationLine = j.location
+        ? ` &middot; <strong>Location:</strong> ${escapeHtml(j.location)}`
+        : '';
+      return `
+      <div style="margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid #e0e0e0;">
+        <h2 style="margin: 0 0 4px; font-size: 18px; color: #1a1a1a;">${escapeHtml(j.company)} &mdash; ${escapeHtml(j.role)}</h2>
+        <div style="font-size: 14px; color: #555; margin-bottom: 10px;">
+          <strong>Match score:</strong> ${escapeHtml(String(j.score))}/10${locationLine}
+        </div>
+        <ul style="margin: 0 0 10px; padding-left: 20px;">
+        ${bullets || '<li>(no reason returned)</li>'}
+        </ul>
+        <div style="font-family: monospace; background: #f4f4f4; padding: 8px 12px; border-radius: 4px; font-size: 13px; color: #333;">
+          capply "${escapeHtml(j.url)}"
+        </div>
+      </div>`;
+    })
+    .join('\n');
+
+  return `
+<div style="max-width: 600px; margin: auto; font-family: sans-serif; font-size: 16px; color: #333; background: #ffffff; padding: 24px;">
+  <div style="background: #1a1a1a; color: #ffffff; padding: 12px 20px; font-size: 18px; font-weight: bold; border-radius: 6px; margin-bottom: 20px;">
+    Job Digest &mdash; ${escapeHtml(today)}
+  </div>
+  <p style="margin: 0 0 20px; font-size: 15px; color: #555;">
+    ${jobs.length} role${jobs.length === 1 ? '' : 's'} scored at or above your threshold today.
+  </p>
+  ${jobBlocks}
+</div>`;
 }
 
 // Appends one row to the configured Google Sheet. `sheetsClient` is injected
@@ -217,16 +269,22 @@ async function main() {
   }
 
   const markdown = buildDigestMarkdown(jobs, today);
+  const html = buildDigestHtml(jobs, today);
   const subject = `Job Digest — ${today} — ${jobs.length} match${jobs.length === 1 ? '' : 'es'}`;
-  const row = [today, subject, jobs.length, markdown];
+  // Sheet's `body` column now holds real HTML, not Markdown (2026-09-03).
+  // The Gmail Zap action's Body type must be set to HTML, not Plain, for
+  // this to render correctly — see Open Items if that hasn't been done yet.
+  const row = [today, subject, jobs.length, html];
 
   if (flags.dryRun) {
     console.error('[digest] --dry-run: nothing written. Row that would be appended:\n');
     console.log(
-      JSON.stringify({ date: today, subject, job_count: jobs.length, body: markdown }, null, 2)
+      JSON.stringify({ date: today, subject, job_count: jobs.length, body: html }, null, 2)
     );
-    console.error('\n[digest] --- rendered markdown ---\n');
+    console.error('\n[digest] --- rendered markdown (readable preview) ---\n');
     console.error(markdown);
+    console.error('\n[digest] --- rendered HTML (what actually gets sent) ---\n');
+    console.error(html);
     return;
   }
 
