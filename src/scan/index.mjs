@@ -22,11 +22,17 @@ import { fetchAshby } from './ats/ashby.mjs';
 import { fetchWorkable } from './ats/workable.mjs';
 import { fetchWorkday } from './ats/workday.mjs';
 import { fetchAggregator as fetchGreenhouseAggregator } from './aggregators/greenhouse.mjs';
+import { fetchAggregator as fetchLeverAggregator } from './aggregators/lever.mjs';
 import { runPrefilter } from '../lib/prefilter-rules.mjs';
 import { fetchOfferBody } from './fetch-offer-body.mjs';
 import { appendFilteredOut } from '../lib/jsonl-writer.mjs';
 import { readPipelineMd, appendOffer, writePipelineMd } from '../lib/pipeline-md.mjs';
-import { loadSeenUrls, appendHistoryRow } from '../lib/scan-history.mjs';
+import {
+  loadSeenUrls,
+  loadSeenRoles,
+  normalizeRoleKey,
+  appendHistoryRow,
+} from '../lib/scan-history.mjs';
 import { loadProfile } from '../lib/load-profile.mjs';
 import { MissingConfigError, requireConfig } from '../lib/config-loader.mjs';
 import { pLimit } from '../lib/p-limit.mjs';
@@ -52,9 +58,17 @@ const DISPATCH = {
 
 const AGGREGATOR_DISPATCH = {
   greenhouse: fetchGreenhouseAggregator,
+  lever: fetchLeverAggregator,
 };
 
 const VALID_SOURCES = new Set(['ats', 'aggregator', 'all']);
+
+// TEMPORARY (2026-09-05): hard cap on new offers added to pipeline.md per
+// scan run, with NO backlog — anything past this cap this run is simply not
+// looked at; it is not queued for next time. Revisit once real volume from
+// the Lever aggregator (4,368 boards) is observed. Intentionally a plain
+// constant, not a portals.yml setting, since this is throwaway test logic.
+const MAX_NEW_OFFERS_PER_RUN = 10;
 
 async function fetchAggregatorOffers(aggregatorsConfig) {
   const results = [];
@@ -80,6 +94,9 @@ async function fetchAggregatorOffers(aggregatorsConfig) {
       };
       if (Array.isArray(cfg.boards) && cfg.boards.length > 0) {
         fnArgs.boards = cfg.boards;
+      }
+      if (Number.isFinite(cfg.maxBoardsPerRun)) {
+        fnArgs.maxBoardsPerRun = cfg.maxBoardsPerRun;
       }
       const { offers, warnings } = await fn(fnArgs);
       results.push({
@@ -225,6 +242,10 @@ export async function runScan(opts) {
   const eligibleTotal = fetchResults.length;
 
   const seen = loadSeenUrls(historyPath, applicationsPath);
+  // Role-level dedup: catches the same company+role posted under multiple
+  // location-specific URLs, which loadSeenUrls (URL-only) lets through as
+  // "new" every time. See scan-history.mjs for stripLocationSuffix().
+  const seenRoles = loadSeenRoles(historyPath);
 
   const today = new Date().toISOString().slice(0, 10);
   const doc = dryRun ? { header: '', sections: [] } : readPipelineMd(pipelinePath);
@@ -305,6 +326,11 @@ export async function runScan(opts) {
     let companyAfterFilter = 0;
     let companyNew = 0;
     for (const offer of result.offers) {
+      // TEMPORARY (2026-09-05): stop adding new offers once the per-run cap
+      // is hit. No backlog — anything not reached this run is simply not
+      // looked at, not queued for the next run. See MAX_NEW_OFFERS_PER_RUN.
+      if (added.length >= MAX_NEW_OFFERS_PER_RUN) break;
+
       let check;
       try {
         check = await runPrefilter(offer, effectiveConfig);
@@ -359,7 +385,18 @@ export async function runScan(opts) {
         filtered.skipped_dup++;
         continue;
       }
+
+      // Role-level dedup: same company + role posted under a different
+      // location URL. Checked separately from the URL check above since
+      // the URL is, by definition, always different in this case.
+      const roleKey = normalizeRoleKey(offer.company, offer.title);
+      if (seenRoles.has(roleKey)) {
+        filtered.skipped_dup++;
+        continue;
+      }
+
       seen.add(offer.url);
+      seenRoles.add(roleKey);
 
       added.push(offer);
       companyNew++;
@@ -405,6 +442,11 @@ export async function runScan(opts) {
         warning,
       });
     }
+
+    // Cap hit inside this result's offers — don't bother processing any
+    // further results this run (relevant once more than one aggregator/
+    // source is enabled at once; harmless no-op otherwise).
+    if (added.length >= MAX_NEW_OFFERS_PER_RUN) break;
   }
 
   if (!dryRun && added.length > 0) {

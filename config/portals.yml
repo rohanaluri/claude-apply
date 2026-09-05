@@ -11,6 +11,11 @@
 # Workday. Group B (the only thing that could reach them) isn't built yet, so
 # they cannot be added here in a way that would actually work. This file can
 # only cover companies genuinely hosted on one of the 4 supported platforms.
+#
+# NOTE (2026-09-05): tracked_companies below are mock/test entries and are
+# NOT scanned by the daily run — the daily run uses `--source aggregator`,
+# which skips tracked_companies entirely and only queries the aggregators
+# block. Left in place for manual `--source ats` / `--only <slug>` testing.
 
 tracked_companies:
   - name: Mistral AI
@@ -92,3 +97,30 @@ aggregators:
     keywords: []
     locations: []
     # boards: — left as default for broadest coverage
+
+  # Lever public aggregator — ADDED 2026-09-05. Hits api.lever.co for 4,368
+  # boards imported from Feashliaa/job-board-aggregator's Common Crawl-
+  # harvested company list (src/scan/aggregators/known-lever-boards.json).
+  # This is a static snapshot, not a live sync — see that module's header
+  # comment for details and refresh instructions.
+  #
+  # TEMPORARY: the daily run caps at 10 new offers total per scan, with no
+  # backlog (see MAX_NEW_OFFERS_PER_RUN in src/scan/index.mjs), and shuffles
+  # the board order each run so we don't get stuck re-checking the same
+  # alphabetically-early slugs every day. Revisit both once real volume is
+  # observed.
+  lever:
+    enabled: true
+    keywords: []
+    locations: []
+    # boards: — left as default (all 4,368 known Lever boards)
+    #
+    # maxBoardsPerRun: caps how many boards get FETCHED per scan, not just
+    # how many offers get kept — without this, every run checks all 4,368
+    # boards even though only 10 new offers/day get kept, which is a
+    # multi-minute run for a 10-offer result. 300 is an untested starting
+    # guess — time a real run (the aggregator logs "done in Xs" to stderr)
+    # and raise/lower this to hit whatever runtime you're comfortable with.
+    # Random shuffle (already in place) means a different 300 get checked
+    # each day either way.
+    maxBoardsPerRun: 300
