@@ -34,6 +34,7 @@ import {
   appendHistoryRow,
 } from '../lib/scan-history.mjs';
 import { loadProfile } from '../lib/load-profile.mjs';
+import { rankBySimilarity } from '../lib/embed-ranker.mjs';
 import { MissingConfigError, requireConfig } from '../lib/config-loader.mjs';
 import { pLimit } from '../lib/p-limit.mjs';
 import {
@@ -63,12 +64,10 @@ const AGGREGATOR_DISPATCH = {
 
 const VALID_SOURCES = new Set(['ats', 'aggregator', 'all']);
 
-// TEMPORARY (2026-09-05): hard cap on new offers added to pipeline.md per
-// scan run, with NO backlog — anything past this cap this run is simply not
-// looked at; it is not queued for next time. Revisit once real volume from
-// the Lever aggregator (4,368 boards) is observed. Intentionally a plain
-// constant, not a portals.yml setting, since this is throwaway test logic.
-const MAX_NEW_OFFERS_PER_RUN = 10;
+// How many top-ranked offers (after the cascade filter) get written to
+// pipeline.md and sent to Phase 2 (Claude) for deep scoring. All others
+// are silently dropped — not queued, not backlogged.
+const MAX_OFFERS_TO_SCORE = 10;
 
 async function fetchAggregatorOffers(aggregatorsConfig) {
   const results = [];
@@ -94,9 +93,6 @@ async function fetchAggregatorOffers(aggregatorsConfig) {
       };
       if (Array.isArray(cfg.boards) && cfg.boards.length > 0) {
         fnArgs.boards = cfg.boards;
-      }
-      if (Number.isFinite(cfg.maxBoardsPerRun)) {
-        fnArgs.maxBoardsPerRun = cfg.maxBoardsPerRun;
       }
       const { offers, warnings } = await fn(fnArgs);
       results.push({
@@ -175,6 +171,7 @@ export async function runScan(opts) {
     filteredPath,
     applicationsPath,
     filterStatePath = null,
+    cvMarkdown = null,
     dryRun = false,
     onlySlug = null,
     onProgress = null,
@@ -250,6 +247,7 @@ export async function runScan(opts) {
   const today = new Date().toISOString().slice(0, 10);
   const doc = dryRun ? { header: '', sections: [] } : readPipelineMd(pipelinePath);
 
+  const candidates = []; // Layer 1 survivors — ranked in Layer 2 before writing
   const added = [];
   const errors = [];
   const filtered = {
@@ -267,11 +265,10 @@ export async function runScan(opts) {
   const perCompany = [];
   let progressIndex = 0;
 
+  // ── Layer 1: regex prefilter + dedup (all sources, no early stop) ──
   for (const result of fetchResults) {
     if (result.error) {
       errors.push({ company: result.company, error: result.error });
-      // Only log to scan-history if this error sentinel isn't already tracked
-      // (prevents unbounded growth for persistently-failing companies).
       const errorUrl = `error://${result.company}`;
       if (!dryRun && !seen.has(errorUrl)) {
         seen.add(errorUrl);
@@ -326,11 +323,6 @@ export async function runScan(opts) {
     let companyAfterFilter = 0;
     let companyNew = 0;
     for (const offer of result.offers) {
-      // TEMPORARY (2026-09-05): stop adding new offers once the per-run cap
-      // is hit. No backlog — anything not reached this run is simply not
-      // looked at, not queued for the next run. See MAX_NEW_OFFERS_PER_RUN.
-      if (added.length >= MAX_NEW_OFFERS_PER_RUN) break;
-
       let check;
       try {
         check = await runPrefilter(offer, effectiveConfig);
@@ -378,7 +370,6 @@ export async function runScan(opts) {
         continue;
       }
 
-      // Offer passed prefilter — count it before dedup check
       companyAfterFilter++;
 
       if (seen.has(offer.url)) {
@@ -386,9 +377,6 @@ export async function runScan(opts) {
         continue;
       }
 
-      // Role-level dedup: same company + role posted under a different
-      // location URL. Checked separately from the URL check above since
-      // the URL is, by definition, always different in this case.
       const roleKey = normalizeRoleKey(offer.company, offer.title);
       if (seenRoles.has(roleKey)) {
         filtered.skipped_dup++;
@@ -398,20 +386,11 @@ export async function runScan(opts) {
       seen.add(offer.url);
       seenRoles.add(roleKey);
 
-      added.push(offer);
+      // Collect candidate — don't write to pipeline.md yet. Layer 2
+      // (embedding similarity) ranks all candidates after this loop,
+      // and only the top N get written.
+      candidates.push({ ...offer, _resultPlatform: result.platform });
       companyNew++;
-      appendOffer(doc, offer);
-      if (!dryRun) {
-        appendHistoryRow(historyPath, {
-          url: offer.url,
-          first_seen: today,
-          portal: result.platform,
-          title: offer.title,
-          company: offer.company,
-          status: 'added',
-        });
-        historyWrites++;
-      }
     }
 
     const fetchWarn = result.fetchWarnings?.length > 0 ? result.fetchWarnings[0] : null;
@@ -442,11 +421,90 @@ export async function runScan(opts) {
         warning,
       });
     }
+  }
 
-    // Cap hit inside this result's offers — don't bother processing any
-    // further results this run (relevant once more than one aggregator/
-    // source is enabled at once; harmless no-op otherwise).
-    if (added.length >= MAX_NEW_OFFERS_PER_RUN) break;
+  // ── Layer 2: embedding similarity ranking ──
+  // Rank ALL candidates by semantic similarity to the CV, then keep only
+  // the top MAX_OFFERS_TO_SCORE. This is the key cost-saving step: hundreds
+  // of Layer 1 survivors get narrowed to ~10 before any Claude tokens are
+  // spent in Phase 2.
+  let winners;
+  let rankingInfo = null;
+  if (candidates.length === 0) {
+    winners = [];
+  } else if (candidates.length <= MAX_OFFERS_TO_SCORE) {
+    // Fewer candidates than the cap — skip ranking, keep all.
+    winners = candidates;
+    rankingInfo = { method: 'passthrough', totalCandidates: candidates.length };
+  } else if (!cvMarkdown) {
+    // No CV available — fall back to random sample (better than alphabetical
+    // bias, worse than real ranking). Log a warning so it's visible.
+    process.stderr.write(
+      `[scan] WARNING: ${candidates.length} candidates but no cv.md loaded — falling back to random sample of ${MAX_OFFERS_TO_SCORE}\n`
+    );
+    // Fisher-Yates shuffle
+    const shuffled = candidates.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    winners = shuffled.slice(0, MAX_OFFERS_TO_SCORE);
+    rankingInfo = { method: 'random', totalCandidates: candidates.length };
+  } else {
+    try {
+      process.stderr.write(
+        `[scan] Layer 2: ranking ${candidates.length} candidates by CV similarity...\n`
+      );
+      const ranked = await rankBySimilarity(candidates, cvMarkdown);
+      winners = ranked.slice(0, MAX_OFFERS_TO_SCORE);
+      rankingInfo = {
+        method: 'embedding',
+        totalCandidates: candidates.length,
+        topScore: winners[0]?.similarityScore?.toFixed(3),
+        cutoffScore: winners[winners.length - 1]?.similarityScore?.toFixed(3),
+      };
+      // Log what made the cut vs what didn't
+      for (const w of winners) {
+        process.stderr.write(
+          `[scan]   ✓ ${w.similarityScore.toFixed(3)} | ${w.company} — ${w.title}\n`
+        );
+      }
+      if (ranked.length > MAX_OFFERS_TO_SCORE) {
+        const dropped = ranked.length - MAX_OFFERS_TO_SCORE;
+        const worst = ranked[ranked.length - 1];
+        process.stderr.write(
+          `[scan]   … ${dropped} more dropped (lowest: ${worst.similarityScore.toFixed(3)} | ${worst.company} — ${worst.title})\n`
+        );
+      }
+    } catch (err) {
+      process.stderr.write(
+        `[scan] WARNING: embedding ranking failed (${err.message}) — falling back to random sample\n`
+      );
+      const shuffled = candidates.slice();
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      winners = shuffled.slice(0, MAX_OFFERS_TO_SCORE);
+      rankingInfo = { method: 'random_fallback', totalCandidates: candidates.length, error: err.message };
+    }
+  }
+
+  // ── Write winners to pipeline.md + scan-history ──
+  for (const offer of winners) {
+    added.push(offer);
+    appendOffer(doc, offer);
+    if (!dryRun) {
+      appendHistoryRow(historyPath, {
+        url: offer.url,
+        first_seen: today,
+        portal: offer._resultPlatform || offer.platform,
+        title: offer.title,
+        company: offer.company,
+        status: 'added',
+      });
+      historyWrites++;
+    }
   }
 
   if (!dryRun && added.length > 0) {
@@ -468,6 +526,8 @@ export async function runScan(opts) {
     perCompany,
     filtered,
     added,
+    candidates: candidates.length,
+    rankingInfo,
     errors,
     historyWrites,
     filteredWrites,
@@ -512,9 +572,21 @@ export function formatSummary(result, dryRun) {
   lines.push(`  • Localisation    ${result.filtered.skipped_location}`);
   lines.push(`  • Date            ${result.filtered.skipped_date}`);
   lines.push('');
-  lines.push(`Nouvelles ajoutées : ${result.added.length}`);
+  lines.push(`Layer 1 candidates : ${result.candidates ?? result.added.length}`);
+  if (result.rankingInfo) {
+    const ri = result.rankingInfo;
+    if (ri.method === 'embedding') {
+      lines.push(`Layer 2 ranking    : ${ri.totalCandidates} → ${result.added.length} (similarity ${ri.cutoffScore}–${ri.topScore})`);
+    } else if (ri.method === 'passthrough') {
+      lines.push(`Layer 2 ranking    : skipped (${ri.totalCandidates} ≤ cap, all kept)`);
+    } else {
+      lines.push(`Layer 2 ranking    : ${ri.method} fallback (${ri.totalCandidates} → ${result.added.length})`);
+    }
+  }
+  lines.push(`Sent to Phase 2    : ${result.added.length}`);
   for (const o of result.added) {
-    lines.push(`  + ${o.company.padEnd(18)} | ${o.title}`);
+    const simTag = o.similarityScore != null ? ` [${o.similarityScore.toFixed(3)}]` : '';
+    lines.push(`  + ${o.company.padEnd(18)} | ${o.title}${simTag}`);
   }
   lines.push('');
   if (dryRun) {
@@ -604,11 +676,12 @@ async function main() {
 
   const yaml = await import('js-yaml');
   const portalsConfig = yaml.load(fs.readFileSync(portalsPath, 'utf8'));
-  const { profile } = await loadProfile(CONFIG_DIR);
+  const { profile, cvMarkdown } = await loadProfile(CONFIG_DIR);
 
   const result = await runScan({
     portalsConfig,
     profile,
+    cvMarkdown,
     pipelinePath: path.join(DATA_DIR, 'pipeline.md'),
     historyPath: path.join(DATA_DIR, 'scan-history.tsv'),
     filteredPath: path.join(DATA_DIR, 'filtered-out.tsv'),
