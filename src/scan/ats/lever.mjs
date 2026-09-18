@@ -1,7 +1,15 @@
 // Fetcher for Lever-hosted job boards.
 // Endpoint: GET https://api.lever.co/v0/postings/{slug}?mode=json
 // Returns Offer[] conforming to the Offer contract.
-
+//
+// `url` stays Lever's `hostedUrl` (the posting overview page) — it's the
+// dedupe key used everywhere else (scan-history.tsv, seenUrls, the Jobs
+// tab's `url` column), so it must never change shape. Lever's API also
+// returns `applyUrl`, the direct link to the application FORM (same page
+// as hostedUrl + "/apply"). We surface that separately as `apply_url` for
+// anything that needs the form directly (the Jobs tab, capply). Falls back
+// to '' if Lever ever omits it, rather than guessing at hostedUrl + '/apply'
+// here — src/apply/index.mjs has its own safety net for that.
 export async function fetchLever(slug, companyName) {
   const url = `https://api.lever.co/v0/postings/${slug}?mode=json`;
   const res = await fetch(url, {
@@ -16,6 +24,7 @@ export async function fetchLever(slug, companyName) {
   }
   return data.map((p) => ({
     url: p.hostedUrl || '',
+    apply_url: p.applyUrl || '',
     title: p.text || '',
     company: companyName,
     location: p.categories?.location || '',

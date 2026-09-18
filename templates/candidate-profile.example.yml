@@ -86,3 +86,14 @@ min_start_date: '2026-08-24'
 #   - France
 #   - Paris
 #   - Remote
+
+# --- Digest Google Sheet (optional) ---
+# Same spreadsheet ID for both tabs — Jobs (durable cross-day dedupe record,
+# written by digest before the summary email) and Digest (one row per run,
+# watched by the Zapier Gmail Zap). jobs_sheet_gid only matters for the
+# digest email's "Open the Jobs tab" link landing on the right tab; find it
+# in the Jobs tab's URL (the number after #gid=).
+# digest_sheet_id: '1AbCdEfGhIjKlMnOpQrStUvWxYz'
+# digest_sheet_name: Digest
+# jobs_sheet_name: Jobs
+# jobs_sheet_gid: 0

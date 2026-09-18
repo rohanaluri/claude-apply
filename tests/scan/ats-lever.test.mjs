@@ -38,6 +38,36 @@ test('fetchLever — mappe correctement une fixture réelle', async () => {
   }
 });
 
+test('fetchLever — apply_url vient de applyUrl quand présent, url reste hostedUrl', async () => {
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  restore = installMockFetch({
+    'https://api.lever.co/v0/postings/mistral?mode=json': fixture,
+  });
+
+  const offers = await fetchLever('mistral', 'Mistral AI');
+  const withApplyUrl = fixture.findIndex((p) => p.applyUrl);
+  assert.ok(withApplyUrl >= 0, 'la fixture doit contenir au moins un applyUrl');
+
+  assert.equal(offers[withApplyUrl].apply_url, fixture[withApplyUrl].applyUrl);
+  assert.equal(
+    offers[withApplyUrl].url,
+    fixture[withApplyUrl].hostedUrl,
+    'url doit rester hostedUrl (clé de dédup), pas applyUrl'
+  );
+});
+
+test('fetchLever — apply_url retombe sur "" si Lever omet applyUrl', async () => {
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  restore = installMockFetch({
+    'https://api.lever.co/v0/postings/mistral?mode=json': fixture,
+  });
+
+  const offers = await fetchLever('mistral', 'Mistral AI');
+  const withoutApplyUrl = fixture.findIndex((p) => !p.applyUrl);
+  assert.ok(withoutApplyUrl >= 0, 'la fixture doit contenir au moins une entrée sans applyUrl');
+  assert.equal(offers[withoutApplyUrl].apply_url, '');
+});
+
 test('fetchLever — array vide si API retourne []', async () => {
   restore = installMockFetch({
     'https://api.lever.co/v0/postings/empty-co?mode=json': [],

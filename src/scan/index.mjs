@@ -34,8 +34,8 @@ import {
   appendHistoryRow,
 } from '../lib/scan-history.mjs';
 import { loadProfile } from '../lib/load-profile.mjs';
-import { rankBySimilarity } from '../lib/embed-ranker.mjs';
 import { MissingConfigError, requireConfig } from '../lib/config-loader.mjs';
+import { writeTodaysOffers } from '../lib/todays-offers.mjs';
 import { pLimit } from '../lib/p-limit.mjs';
 import {
   hashFilterConfig,
@@ -63,11 +63,6 @@ const AGGREGATOR_DISPATCH = {
 };
 
 const VALID_SOURCES = new Set(['ats', 'aggregator', 'all']);
-
-// How many top-ranked offers (after the cascade filter) get written to
-// pipeline.md and sent to Phase 2 (Claude) for deep scoring. All others
-// are silently dropped — not queued, not backlogged.
-const MAX_OFFERS_TO_SCORE = 10;
 
 async function fetchAggregatorOffers(aggregatorsConfig) {
   const results = [];
@@ -423,72 +418,13 @@ export async function runScan(opts) {
     }
   }
 
-  // ── Layer 2: embedding similarity ranking ──
-  // Rank ALL candidates by semantic similarity to the CV, then keep only
-  // the top MAX_OFFERS_TO_SCORE. This is the key cost-saving step: hundreds
-  // of Layer 1 survivors get narrowed to ~10 before any Claude tokens are
-  // spent in Phase 2.
-  let winners;
-  let rankingInfo = null;
-  if (candidates.length === 0) {
-    winners = [];
-  } else if (candidates.length <= MAX_OFFERS_TO_SCORE) {
-    // Fewer candidates than the cap — skip ranking, keep all.
-    winners = candidates;
-    rankingInfo = { method: 'passthrough', totalCandidates: candidates.length };
-  } else if (!cvMarkdown) {
-    // No CV available — fall back to random sample (better than alphabetical
-    // bias, worse than real ranking). Log a warning so it's visible.
-    process.stderr.write(
-      `[scan] WARNING: ${candidates.length} candidates but no cv.md loaded — falling back to random sample of ${MAX_OFFERS_TO_SCORE}\n`
-    );
-    // Fisher-Yates shuffle
-    const shuffled = candidates.slice();
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    winners = shuffled.slice(0, MAX_OFFERS_TO_SCORE);
-    rankingInfo = { method: 'random', totalCandidates: candidates.length };
-  } else {
-    try {
-      process.stderr.write(
-        `[scan] Layer 2: ranking ${candidates.length} candidates by CV similarity...\n`
-      );
-      const ranked = await rankBySimilarity(candidates, cvMarkdown);
-      winners = ranked.slice(0, MAX_OFFERS_TO_SCORE);
-      rankingInfo = {
-        method: 'embedding',
-        totalCandidates: candidates.length,
-        topScore: winners[0]?.similarityScore?.toFixed(3),
-        cutoffScore: winners[winners.length - 1]?.similarityScore?.toFixed(3),
-      };
-      // Log what made the cut vs what didn't
-      for (const w of winners) {
-        process.stderr.write(
-          `[scan]   ✓ ${w.similarityScore.toFixed(3)} | ${w.company} — ${w.title}\n`
-        );
-      }
-      if (ranked.length > MAX_OFFERS_TO_SCORE) {
-        const dropped = ranked.length - MAX_OFFERS_TO_SCORE;
-        const worst = ranked[ranked.length - 1];
-        process.stderr.write(
-          `[scan]   … ${dropped} more dropped (lowest: ${worst.similarityScore.toFixed(3)} | ${worst.company} — ${worst.title})\n`
-        );
-      }
-    } catch (err) {
-      process.stderr.write(
-        `[scan] WARNING: embedding ranking failed (${err.message}) — falling back to random sample\n`
-      );
-      const shuffled = candidates.slice();
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      winners = shuffled.slice(0, MAX_OFFERS_TO_SCORE);
-      rankingInfo = { method: 'random_fallback', totalCandidates: candidates.length, error: err.message };
-    }
-  }
+  // ── Layer 2 removed (Decision: drop the top-10 cutoff + embedding rank,
+  // 2026-09-18) ── every Layer 1 survivor now goes through; nothing is
+  // silently dropped. `rankBySimilarity`/embed-ranker.mjs stays in the repo
+  // for anyone who wants to re-enable ranking later, it's just not called
+  // from here anymore.
+  const winners = candidates;
+  const rankingInfo = null;
 
   // ── Write winners to pipeline.md + scan-history ──
   for (const offer of winners) {
@@ -572,21 +508,10 @@ export function formatSummary(result, dryRun) {
   lines.push(`  • Localisation    ${result.filtered.skipped_location}`);
   lines.push(`  • Date            ${result.filtered.skipped_date}`);
   lines.push('');
-  lines.push(`Layer 1 candidates : ${result.candidates ?? result.added.length}`);
-  if (result.rankingInfo) {
-    const ri = result.rankingInfo;
-    if (ri.method === 'embedding') {
-      lines.push(`Layer 2 ranking    : ${ri.totalCandidates} → ${result.added.length} (similarity ${ri.cutoffScore}–${ri.topScore})`);
-    } else if (ri.method === 'passthrough') {
-      lines.push(`Layer 2 ranking    : skipped (${ri.totalCandidates} ≤ cap, all kept)`);
-    } else {
-      lines.push(`Layer 2 ranking    : ${ri.method} fallback (${ri.totalCandidates} → ${result.added.length})`);
-    }
-  }
-  lines.push(`Sent to Phase 2    : ${result.added.length}`);
+  lines.push(`Candidats (post-filtre) : ${result.candidates ?? result.added.length}`);
+  lines.push(`Nouvelles offres ajoutées : ${result.added.length}`);
   for (const o of result.added) {
-    const simTag = o.similarityScore != null ? ` [${o.similarityScore.toFixed(3)}]` : '';
-    lines.push(`  + ${o.company.padEnd(18)} | ${o.title}${simTag}`);
+    lines.push(`  + ${o.company.padEnd(18)} | ${o.title}`);
   }
   lines.push('');
   if (dryRun) {
@@ -703,6 +628,17 @@ async function main() {
       }
     },
   });
+
+  // Hand off today's new offers to `digest` (separate process, can't share
+  // memory). Skipped on --dry-run so a test run never overwrites real data
+  // that a later real `digest` run would otherwise pick up.
+  if (!dryRun) {
+    const today = new Date().toISOString().slice(0, 10);
+    writeTodaysOffers(path.join(DATA_DIR, 'todays-offers.json'), {
+      date: today,
+      offers: result.added,
+    });
+  }
 
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));

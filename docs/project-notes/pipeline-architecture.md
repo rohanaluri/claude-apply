@@ -95,6 +95,50 @@ repeating it.
     - `fillSimple()`'s plain-`<select>` branch now checks for a real matching option
       BEFORE calling `selectOption()` — fails in milliseconds with a specific
       `no option matches "X"` reason instead of stalling.
+28. **Lever's `applyUrl` is now captured alongside `hostedUrl` (2026-09-18).** The digest
+    was sending `hostedUrl` (the posting overview page) as the thing to open and apply
+    from; Lever's API separately returns `applyUrl`, the direct link to the form itself
+    (same page + `/apply`). `hostedUrl` stays the `url` field (dedupe key, unchanged
+    everywhere it's used); `applyUrl` is surfaced as a new `apply_url` field. `capply`
+    (`src/apply/index.mjs`) also gained its own safety net —
+    `normalizeApplyUrl()` appends `/apply` to any `jobs.lever.co` URL that's missing it,
+    for anyone still pasting an overview link by hand. Only Lever was touched;
+    Greenhouse and Ashby aren't implemented in this pipeline yet, so their apply-link
+    shape hasn't been checked.
+29. **Phase 2 (LLM scoring) and the top-10 Layer 2 cutoff are both dropped from the
+    daily path (2026-09-18).** `src/scan/index.mjs` no longer ranks Layer 1 survivors by
+    CV-embedding similarity or truncates to `MAX_OFFERS_TO_SCORE` — every offer that
+    clears the regex/blacklist/location/date prefilter goes through. The Routine's
+    instructions (Section 8) no longer call `node src/score/index.mjs --batch`. Both
+    `src/score/` and `src/lib/embed-ranker.mjs` stay in the repo — nothing deleted, just
+    unused by the daily Routine — in case scoring is worth re-enabling once real volume
+    is observed without it.
+30. **Cross-day dedupe moved from `scan-history.tsv` to the Jobs tab's `url` column
+    (2026-09-18).** The cloud Routine does a fresh checkout every run — `data/` never
+    survives between days — so `scan-history.tsv`-based dedupe only ever worked
+    _within_ a single run, never across days, despite reading as if it did. The Jobs
+    tab (`src/lib/google-sheets-jobs.mjs`) is the one piece of state that's actually
+    durable: `digest` reads its `url` column before deciding what's new. If that read
+    fails for any reason, the run stops without sending an email — a transient Sheets
+    hiccup must never look like "zero new jobs" (see #31). `scan-history.tsv` and its
+    role-level dedupe are unchanged and still useful for a single run with `--only` or
+    manual re-runs.
+31. **`digest` now sends every run, including a "0 new roles" email.** Previously,
+    zero jobs scored above threshold meant no Sheets write and no email at all — which
+    made a genuinely broken run indistinguishable from a quiet day. `digest` now always
+    appends one Digest-tab row; a missing email is meant to mean something broke.
+32. **`digest` no longer reads `data/evaluations.jsonl` for what to send.** With Phase 2
+    removed from the daily path (#29), there's nothing new writing that file day to day.
+    `scan` now hands its filtered survivors directly to `digest` via
+    `data/todays-offers.json` (`src/lib/todays-offers.mjs`) — a hand-off file, not an
+    accumulating log; it's overwritten every scan run. `digest` reads it, drops anything
+    already in the Jobs tab (#30), appends the rest there in one batch call, THEN writes
+    the Digest-tab summary row — in that order, so an email is never sent for jobs that
+    didn't actually make it into the sheet. The email itself is now a summary (count,
+    breakdown by platform, top companies, a link to the Jobs tab) rather than one card
+    per job with a score and reasons — that detail lived in Phase 2's output, which no
+    longer runs; the Jobs tab is where per-job detail (and the `capply_command` column)
+    lives now.
 
 ---
 
@@ -222,6 +266,14 @@ Claude Code slash command, and the captcha pause/resume loop (Decision #25) is s
 real branch off the fill step, since it's now a normal part of a Lever run rather than a
 failure mode.
 
+**Not yet redrawn (2026-09-18):** this diagram still shows Phase 2 (batched scoring) on
+the daily path from Phase 1 to Phase 3. As of Decisions #29 and #32, the daily Routine
+skips Phase 2 entirely — Phase 1 hands its survivors straight to Phase 3 via
+`data/todays-offers.json`, and Phase 3 gates on the Jobs tab (not `evaluations.jsonl`)
+before writing the digest row. See Sections 3, 5 and 8 for the current mechanism; treat
+the box for Phase 2 here as "exists in the repo, not on the daily path" until the
+diagram itself is updated.
+
 ---
 
 ## 3. Phase 1 — Discovery & Prefilter (Cloud, $0 AI)
@@ -231,7 +283,10 @@ failure mode.
 **Confirmed working end-to-end in the real cloud Routine, with real live postings
 (2026-08-26).** Scans every company in `config/portals.yml`, prefilters by
 title/blacklist/location/date, dedupes against `data/scan-history.tsv`, appends survivors
-to `data/pipeline.md`.
+to `data/pipeline.md`, and — since 2026-09-18 (Decisions #29, #32) — writes the same
+survivors to `data/todays-offers.json` for Phase 3 to pick up. There is no ranking or
+top-N cutoff anymore: every survivor goes through, not just the top 10 by CV-embedding
+similarity.
 
 **`portals.yml` and `target_locations` fixed 2026-08-26.** Tracked companies swapped to
 confirmed-live Lever boards (PointClickCare, Analytic Partners, plus Mistral AI which
@@ -309,27 +364,52 @@ model's judgment on rejected postings.
 
 ## 5. Phase 3 — Digest (Cloud, $0 AI, Google Sheets → Zapier → Gmail)
 
-**Status: confirmed working end-to-end 2026-08-24** — a real digest email was received in
-Gmail. See Decision #13 for why this replaced the original webhook plan.
+**Status: confirmed working end-to-end 2026-08-24** (original evaluations-based version).
+**Rewritten 2026-09-18** to drop Phase 2 scoring from the daily path — see Decisions
+#28-32. Not yet re-verified live against a real cloud Routine run as of this writing;
+verify with `--dry-run` first, then a real run, before trusting it unattended.
 
-**Mechanism:**
+**Mechanism (current):**
 
-1. `node src/digest/index.mjs` reads `data/evaluations.jsonl`, filters to entries scored
-   **today** at/above threshold (`--min-score` → `digest_min_score` →
-   `auto_apply_min_score` → `7`), and builds a markdown digest (header, one
-   `### Company — Role` block per qualifying job, score, why-fit bullets, and an apply
-   command — **still shows `/apply <url>`, not `capply`; see Open Items**).
-2. Appends **exactly one row** to a Google Sheet (Decision #17): `date`, `subject`,
-   `job_count`, `body` (the whole rendered digest in one cell).
-3. Zapier watches that Sheet — **Trigger: Google Sheets → "New Spreadsheet Row"**
+1. `node src/scan/index.mjs` writes `data/todays-offers.json` at the end of every non-
+   dry-run — every Layer 1 survivor from that run (`src/lib/todays-offers.mjs`). This
+   file is a hand-off, not a log: it's overwritten each run, not appended to.
+2. `node src/digest/index.mjs` reads that file, then reads the Jobs tab's `url` column
+   (`src/lib/google-sheets-jobs.mjs`) — the durable cross-day record, since `data/`
+   doesn't survive between cloud Routine runs (Decision #30). **If that read fails, the
+   run stops here — no Jobs write, no email.**
+3. Offers whose `url` isn't already in the Jobs tab are appended there in **one batch
+   call**: `date_found | company | title | location | url | platform | apply_url |
+   status | notes | capply_command` (`status`/`notes`/`capply_command` left blank —
+   see the Jobs tab's own setup below).
+4. **Only after that append succeeds**, one row is appended to the Digest tab: `date`,
+   `subject`, `job_count`, `body`. `body` is now a *summary* — new-role count, a
+   breakdown by platform, top companies, and a link to open the Jobs tab — not one card
+   per job with a score and reasons, since that detail came from Phase 2's output,
+   which no longer runs. **This row is written every run, including 0 new roles**
+   (Decision #31) — a missing email should mean something broke, not "quiet day".
+5. Zapier watches the Digest tab — **Trigger: Google Sheets → "New Spreadsheet Row"**
    (Instant) → **Action: Gmail → "Send Email"**, Subject/Body mapped from the row.
-   **Body type: Plain**, so Markdown renders as literal characters — a deliberate POC
-   simplification, not a bug.
+   **Body type: HTML** (unchanged — the Digest tab's column shape and the Zap itself
+   didn't need to change for this rewrite).
 
-**Google Sheet:** "Daily Application Digest", tab "Digest", columns
-`date | subject | job_count | body`. Spreadsheet ID in `candidate-profile.yml` as
-`digest_sheet_id` (resolution: `--sheet-id` flag → `$GOOGLE_SHEETS_DIGEST_ID` →
-profile).
+**Google Sheet:** "Daily Application Digest" (same spreadsheet for both tabs).
+- **Digest tab** — columns `date | subject | job_count | body`, unchanged.
+- **Jobs tab** — columns `date_found | company | title | location | url | platform |
+  apply_url | status | notes | capply_command` (confirmed with Rohan 2026-09-18). One-
+  time setup, done by hand, not by code: header row; a `status` dropdown (data
+  validation) with whatever values are useful (`applied`, `skip`, etc.); and a
+  `capply_command` formula. **Use an `ARRAYFORMULA` in the header row** (e.g.
+  `={"capply_command"; ARRAYFORMULA(IF(E2:E="", "", "capply """&G2:G&""""))}` — adjust
+  column letters to taste) rather than a per-row formula, so every row `digest` appends
+  picks it up automatically; a per-row formula would need `digest` to write it, which
+  it deliberately doesn't (writing into a formula column would overwrite the formula).
+
+Spreadsheet ID in `candidate-profile.yml` as `digest_sheet_id`, shared by both tabs
+(resolution: `--sheet-id` flag → `$GOOGLE_SHEETS_DIGEST_ID` → profile). Tab names:
+`digest_sheet_name` (default `Digest`), `jobs_sheet_name` (default `Jobs`). Optional
+`jobs_sheet_gid` makes the digest email's "Open the Jobs tab" link land on that exact
+tab instead of the spreadsheet's default view.
 
 **Auth — Google service account:** `digest-writer@claude-apply.iam.gserviceaccount.com`,
 scoped to `spreadsheets` only, shared as Editor on the target Sheet. Dual-path credential
@@ -342,7 +422,8 @@ delivery (Decision #18): local key file at `config/google-service-account.json` 
 2-step limit. Trigger checks never consume tasks — only the Gmail send does, ~1 task/day
 against a 100/month allowance.
 
-**`--dry-run` prints the row and rendered markdown, writes nothing.**
+**`--dry-run` skips the Jobs tab read (assumes every candidate offer is new) and prints
+what would be appended to both tabs; writes nothing.**
 
 ---
 
@@ -478,7 +559,7 @@ Every file below was opened and read directly — not assumed from the README.
 | `score/index.mjs` | `fetchOfferBody()` — Lever via plain `fetch()` to the public board API (Decision #23); non-Lever falls back to Playwright. `--batch` builds one prompt for all pending offers | 1 batched call per `--batch` run |
 | `apply/index.mjs` | Phase 4 orchestrator. **Substantially rewritten 2026-08-27:** `waitOutCaptcha()` pause/resume (#25), `FIELD_TIMEOUT_MS` per-field cap (#26), live per-field logging, `RADIO_INVALID_KEYS` guard + fast-fail `<select>` (#27). Confirmed live against a real 20-field Lever form via `capply`. Does NOT yet call `cover-letter.mjs` | 1 batched call per page, free-text only |
 | `.claude/commands/apply.md` | Thin wrapper around `index.mjs`. Still functional, **no longer the documented daily-use path** (Decision #24) | No |
-| `digest/index.mjs` | Reads `evaluations.jsonl`, filters by score/date, builds the digest, appends one row to Google Sheets. Auth via env var (cloud) or file (local). Digest text still says `/apply` — see Open Items | No |
+| `digest/index.mjs` | **Rewritten 2026-09-18.** Reads `data/todays-offers.json` (not `evaluations.jsonl`), reads the Jobs tab's `url` column for cross-day dedupe, appends new jobs there, then appends a summary row to the Digest tab — every run, including 0 new. Auth via env var (cloud) or file (local), unchanged. | No |
 | `lib/candidate-profile.schema.mjs` | `validateProfile()` — strict allowlist; rejects unknown keys. Updated 2026-08-24 (digest keys) and 2026-08-26 (`target_locations`) | No |
 | `lib/load-profile.mjs` | `loadProfile()` — reads + validates the profile; called by both scan and score, which is why a schema mismatch blocks Phase 1 even for a Phase-3-only field (Decision #21) | No |
 
@@ -486,35 +567,50 @@ Every file below was opened and read directly — not assumed from the README.
 
 ## 8. Cloud Routine & Environment Configuration
 
-**Status: confirmed working end-to-end with real data 2026-08-26** — all four steps, exit
-code 0, 19 real postings found, 17 scored in one batch call.
+**Status: confirmed working end-to-end with real data 2026-08-26** (original 4-step,
+scoring-included version). **Instructions rewritten 2026-09-18** to drop the scoring
+step (Decisions #29, #32) — not yet re-verified against a real cloud Routine run; do a
+manual "Run now" and check the resulting email/Jobs tab before trusting the schedule.
 
-**Routine name:** "Job Pipeline — Scan, Score, Digest"
+**Routine name:** "Job Pipeline — Scan, Score, Digest" (name kept as-is; rename to "Job
+Pipeline — Scan, Digest" if that stops being confusing — not required for correctness).
 **Repository:** `rohanaluri/claude-apply`
 **Trigger:** Schedule → Daily → 7:00 AM EDT (Decision #10)
 **Environment:** custom cloud Environment `claude-apply` — NOT the account's default
 "Daily Notifications" Environment, which belongs to an unrelated morning-news Routine.
 
-**Instructions (the Routine's actual prompt), in full:**
+**Instructions (the Routine's actual prompt) — current, 3-step:**
 
 ```
 Run the daily job-pipeline steps in this exact order, from the repo root:
 
 1. npm install
 2. node src/scan/index.mjs
-3. node src/score/index.mjs --batch
-4. node src/digest/index.mjs
+3. node src/digest/index.mjs
 
 Run each command exactly as written — do not modify flags, do not skip
 steps, and do not improvise alternate commands if one fails. If any
 command exits with a non-zero code, stop immediately and report the
 exact error output rather than attempting to continue or fix it.
 
-After all four complete successfully, report a short summary: how many
-new postings Phase 1 found, how many Phase 2 scored (and their scores),
-and whether Phase 3 wrote a digest row today or reported nothing
-qualified.
+After both scan and digest complete successfully, report a short
+summary: how many new postings the scan found, how many of those were
+already in the Jobs tab (so weren't re-sent), and how many new rows the
+digest actually appended to the Jobs tab today.
 ```
+
+**Previous 4-step version (kept here for reference, no longer used):**
+
+```
+1. npm install
+2. node src/scan/index.mjs
+3. node src/score/index.mjs --batch    # ← removed, Decision #29
+4. node src/digest/index.mjs
+```
+
+`node src/score/index.mjs --batch` was removed from the instructions, not deleted from
+the repo — `src/score/` still exists and still works standalone (`/score <url>`,
+`npm run score:batch`) if scoring is ever worth re-enabling.
 
 `npm install` is step 1 of the *instructions*, not the Environment's setup script —
 Decision #20 for why that split matters.
@@ -569,8 +665,9 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       logic for select-type EEO fields, not just radio-groups.
 - [ ] **`config/cv.pdf` doesn't exist — only `cv.md`.** Resume upload has therefore never
       run in a real `capply` session. Needs a real PDF at the profile's `cv_path`.
-- [ ] **Phase 3's digest still says `/apply <url>`, not `capply "<url>"`.** Stale given
-      Decision #24 — `digest/index.mjs`'s markdown template needs updating.
+- [x] ~~Phase 3's digest still says `/apply <url>`, not `capply "<url>"`.~~ **Resolved
+      2026-09-18 (Decision #32)** — the digest email no longer includes a per-job apply
+      command at all; that moved to the Jobs tab's `capply_command` formula column.
 - [ ] **`google-service-account.json`'s key was pasted into chat history during setup.**
       Rotate as routine hygiene once Phase 3 iteration settles. Low risk (Sheets-only
       scope, one non-sensitive spreadsheet, solo account).

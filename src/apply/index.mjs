@@ -216,7 +216,8 @@ const normText = (s) =>
 /** True if `o` reads as a "prefer not to say"-style decline option, in
  * whatever exact wording a given company uses. Shared by chooseOption()
  * (radio-groups) and planFields()'s EEO select-decline handling. */
-const isDeclineOption = (o) => /prefer not to (say|answer|disclose)|decline to|do not wish/i.test(o);
+const isDeclineOption = (o) =>
+  /prefer not to (say|answer|disclose)|decline to|do not wish/i.test(o);
 
 /**
  * Shared "smart" text matcher: exact match, then UNAMBIGUOUS prefix match,
@@ -814,7 +815,9 @@ function logFieldResult(p) {
       p.action
     ] || p.action;
   const shown = String(p.value ?? '').slice(0, 50);
-  console.error(`  [${tag}]${' '.repeat(Math.max(0, 7 - tag.length))} ✓ ${p.classKey.padEnd(16)} → ${shown}`);
+  console.error(
+    `  [${tag}]${' '.repeat(Math.max(0, 7 - tag.length))} ✓ ${p.classKey.padEnd(16)} → ${shown}`
+  );
 }
 
 /**
@@ -922,9 +925,14 @@ function buildPreferencesText(profile) {
     lines.push(`Preferred hours/week: ${profile.preferred_hours_per_week}`);
   }
   if (Array.isArray(profile.remote_preference) && profile.remote_preference.length) {
-    lines.push(`Remote/onsite preference (priority order): ${profile.remote_preference.join(', ')}`);
+    lines.push(
+      `Remote/onsite preference (priority order): ${profile.remote_preference.join(', ')}`
+    );
   }
-  if (profile.willing_to_travel_percent !== undefined && profile.willing_to_travel_percent !== null) {
+  if (
+    profile.willing_to_travel_percent !== undefined &&
+    profile.willing_to_travel_percent !== null
+  ) {
     lines.push(`Willing to travel: ${profile.willing_to_travel_percent}%`);
   }
   if (profile.salary_expectation) {
@@ -943,6 +951,29 @@ function buildPreferencesText(profile) {
 
 // ────────────────────────────────────────────────────────────────── main ────
 
+// Lever posting pages come in two shapes: the overview page
+// (https://jobs.lever.co/<company>/<id>) and the actual application form
+// (…/<id>/apply). The digest now sends the real apply_url, but this is a
+// safety net for anyone still pasting the overview URL by hand (an older
+// email, a link copied from the Jobs sheet's `url` column instead of
+// `apply_url`, etc.) — append "/apply" so capply always lands on the form.
+// Only touches jobs.lever.co links, and only when "/apply" isn't there
+// already (with or without a trailing slash/query string).
+export function normalizeApplyUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl) return rawUrl;
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+  if (parsed.hostname !== 'jobs.lever.co') return rawUrl;
+  const pathNoTrailingSlash = parsed.pathname.replace(/\/+$/, '');
+  if (/\/apply$/i.test(pathNoTrailingSlash)) return rawUrl;
+  parsed.pathname = `${pathNoTrailingSlash}/apply`;
+  return parsed.toString();
+}
+
 function parseArgs(argv) {
   const out = { dryRun: false, port: 9222, maxAiCalls: 1, url: null };
   for (let i = 0; i < argv.length; i++) {
@@ -952,6 +983,7 @@ function parseArgs(argv) {
     else if (a === '--max-ai-calls') out.maxAiCalls = Number(argv[++i]);
     else if (!a.startsWith('--')) out.url = a;
   }
+  if (out.url) out.url = normalizeApplyUrl(out.url);
   return out;
 }
 
@@ -1043,7 +1075,9 @@ async function main() {
     company = titleParts.length > 1 ? titleParts[0] : null;
     language = detectLanguage({ title: role, description: meta.body });
     log.push(`role="${role}" company="${company}" language=${language}`);
-    console.error(`Detected: company="${company ?? '—'}"  role="${role ?? '—'}"  language=${language}`);
+    console.error(
+      `Detected: company="${company ?? '—'}"  role="${role ?? '—'}"  language=${language}`
+    );
 
     let aiCallsUsed = 0;
     const allPlans = [];
@@ -1066,7 +1100,8 @@ async function main() {
       allPlans.push(...plan);
 
       log.push(`step ${step}: ${plan.length} fields`);
-      if (!args.dryRun) console.error(`\n── step ${step}: ${plan.length} field(s) found, filling now ──`);
+      if (!args.dryRun)
+        console.error(`\n── step ${step}: ${plan.length} field(s) found, filling now ──`);
 
       if (args.dryRun) {
         console.log(`\n── step ${step} (dry-run, nothing filled) ──`);
@@ -1190,7 +1225,9 @@ async function main() {
               }
             }
             if (preferencesText) {
-              console.error(`  [debug] preferences sent:\n${preferencesText.replace(/^/gm, '    ')}`);
+              console.error(
+                `  [debug] preferences sent:\n${preferencesText.replace(/^/gm, '    ')}`
+              );
             }
             try {
               const { text, usage } = runClaudeBatch(prompt);
@@ -1224,8 +1261,16 @@ async function main() {
                   if (matched) {
                     const ok =
                       p.kind === 'radio-group'
-                        ? await withTimeout(fillRadio(page, p, matched), FIELD_TIMEOUT_MS, p.classKey)
-                        : await withTimeout(fillSimple(page, p, matched), FIELD_TIMEOUT_MS, p.classKey);
+                        ? await withTimeout(
+                            fillRadio(page, p, matched),
+                            FIELD_TIMEOUT_MS,
+                            p.classKey
+                          )
+                        : await withTimeout(
+                            fillSimple(page, p, matched),
+                            FIELD_TIMEOUT_MS,
+                            p.classKey
+                          );
                     p.action = ok ? 'filled-ai' : 'review';
                     if (ok) p.value = matched;
                     else p.reason = 'AI-selected option fill failed';
@@ -1241,7 +1286,11 @@ async function main() {
                   }
                 } else {
                   if (ans && String(ans).trim()) {
-                    const ok = await withTimeout(fillSimple(page, p, ans), FIELD_TIMEOUT_MS, p.classKey);
+                    const ok = await withTimeout(
+                      fillSimple(page, p, ans),
+                      FIELD_TIMEOUT_MS,
+                      p.classKey
+                    );
                     p.action = ok ? 'filled-ai' : 'review';
                     if (!ok) p.reason = 'AI answer fill failed';
                     else p.value = ans;

@@ -41,6 +41,12 @@ const OPTIONAL_FIELDS = [
   'digest_sheet_id',
   'digest_sheet_name',
   'digest_min_score',
+  // Added 2026-09-18: the Jobs tab lives in the same spreadsheet as
+  // digest_sheet_id, just a different tab. jobs_sheet_gid is optional —
+  // only needed to make the digest email's "Open the Jobs tab" link land
+  // on that exact tab instead of the spreadsheet's default view.
+  'jobs_sheet_name',
+  'jobs_sheet_gid',
   'target_locations',
   // Application-preference fields (2026-08-27) — grounding for Phase 4's
   // AI-answered dropdown/radio path (unrecognized questions with real
