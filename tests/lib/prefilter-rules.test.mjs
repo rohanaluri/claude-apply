@@ -88,6 +88,66 @@ test('checkLocation: pass "Paris, France / London, UK" one segment matches', () 
   assert.deepEqual(r, { pass: true });
 });
 
+// ---------- checkLocation: US state fallback (2026-09-18 fix) ----------
+// Real ATS locations are almost always "City, ST" or "City, State" — never
+// spelling out "United States" — which the plain substring match above
+// rejected outright. See pipeline-architecture.md.
+const usTargets = ['Remote', 'United States', 'USA'];
+
+test('checkLocation: pass "Austin, TX" — state abbreviation', () => {
+  const r = checkLocation({ location: 'Austin, TX', title: 'Dev', body: '' }, usTargets);
+  assert.deepEqual(r, { pass: true });
+});
+
+test('checkLocation: pass "Austin, Texas" — full state name', () => {
+  const r = checkLocation({ location: 'Austin, Texas', title: 'Dev', body: '' }, usTargets);
+  assert.deepEqual(r, { pass: true });
+});
+
+test('checkLocation: pass "San Francisco, CA"', () => {
+  const r = checkLocation({ location: 'San Francisco, CA', title: 'Dev', body: '' }, usTargets);
+  assert.deepEqual(r, { pass: true });
+});
+
+test('checkLocation: pass "Remote - TX" geo segment matches state', () => {
+  const r = checkLocation({ location: 'Remote - TX', title: 'Dev', body: '' }, usTargets);
+  assert.deepEqual(r, { pass: true });
+});
+
+test('checkLocation: reject "Toronto, ON" — not a US state', () => {
+  const r = checkLocation({ location: 'Toronto, ON', title: 'Dev', body: '' }, usTargets);
+  assert.equal(r.pass, false);
+  assert.match(r.reason, /location/);
+});
+
+test('checkLocation: US state fallback does not fire without US in targetLocations', () => {
+  // targets = ['France', 'Paris', 'Remote'] — no explicit US/USA signal.
+  const r = checkLocation({ location: 'Austin, TX', title: 'Dev', body: '' }, targets);
+  assert.equal(r.pass, false);
+});
+
+test('checkLocation: pass "Portland, OR" — risky 2-letter abbreviation as its own segment', () => {
+  const r = checkLocation({ location: 'Portland, OR', title: 'Dev', body: '' }, usTargets);
+  assert.deepEqual(r, { pass: true });
+});
+
+test('checkLocation: "OR" does not false-positive when it is not its own segment', () => {
+  // No comma/slash/dash to split on, so "Marketing OR Finance" is one
+  // whole segment — must NOT match as Oregon just because the word "or"
+  // appears inside it. Proves the abbreviation check is exact-segment,
+  // not a word-boundary substring test.
+  const r = checkLocation({ location: 'Marketing OR Finance', title: 'Dev', body: '' }, usTargets);
+  assert.equal(r.pass, false);
+});
+
+test('checkLocation: "Remote or Mississauga" still passes via existing "Remote" match, not the state fallback', () => {
+  const r = checkLocation(
+    { location: 'Remote or Mississauga', title: 'Dev', body: '' },
+    usTargets
+  );
+  assert.deepEqual(r, { pass: true });
+});
+
 // ---------- checkLocation fallback (empty location) ----------
 test('checkLocation: fallback pass body mentions Paris', () => {
   const r = checkLocation({ location: '', title: 'Dev', body: 'Based in Paris office' }, targets);

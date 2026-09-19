@@ -139,6 +139,79 @@ repeating it.
     per job with a score and reasons — that detail lived in Phase 2's output, which no
     longer runs; the Jobs tab is where per-job detail (and the `capply_command` column)
     lives now.
+33. **Daily discovery is `--source aggregator`, not the default `ats` mode
+    (confirmed 2026-09-18).** `portals.yml`'s `tracked_companies` (Mistral AI,
+    PointClickCare, Analytic Partners, Fliff, PadSplit, Aircall) are mock/manual-test
+    entries only — the real daily Routine runs `node src/scan/index.mjs --source
+    aggregator`, which skips `tracked_companies` entirely (`wantsAts` is only true for
+    `ats`/`all`) and instead queries two company-agnostic aggregators configured in
+    `portals.yml`'s `aggregators:` block: a Greenhouse aggregator (~20 curated public
+    boards) and a Lever aggregator (`src/scan/aggregators/known-lever-boards.json`,
+    4,368 boards, a one-time Common Crawl snapshot from `Feashliaa/job-board-aggregator`
+    — not a live sync). Both share the same title/location/date prefilter as the ATS
+    path. This was previously undocumented here — Section 3 now describes it. Confirmed
+    today that a company found via the daily Routine (PointClickCare, 2 postings) came
+    from the Lever aggregator's own board list, not from `tracked_companies` — the two
+    happen to reference the same real company, which caused real confusion until traced
+    through the code (see #34 for what that scan actually revealed).
+34. **US city/state postings were being silently rejected by the location prefilter —
+    found and fixed 2026-09-18.** `checkLocation()` in `src/lib/prefilter-rules.mjs`
+    only passed a location if one of its comma/slash/dash-separated segments *literally
+    contained* a string from `target_locations` (`["Remote", "United States", "USA"]`).
+    Real ATS postings are almost always `"City, ST"` or `"City, State"` (e.g. `"Austin,
+    TX"`) and never spell out the country, so nearly every plain US posting failed with
+    `location: ... not in target zones` — verified directly by running the function
+    against real examples (`"San Francisco, CA"`, `"Austin, TX"` both rejected; only
+    `"Remote"` and postings that spelled out `"United States"` passed). This explains
+    why the aggregator scan (4,368+ Lever boards, ~20 Greenhouse boards) was
+    effectively returning almost nothing: the aggregator layer itself was working, but
+    the shared location prefilter downstream was discarding nearly every result.
+    **Fix:** `checkLocation()` gained a US-oriented fallback, mirroring the existing
+    France fallback — if `target_locations` explicitly names the US (`"united
+    states"`/`"usa"`, not just `"Remote"`, since a France-remote candidate also has
+    "Remote" in their list), a location segment matching a real US state (full name,
+    word-boundary — `"Texas"` — or postal abbreviation, exact-segment match only —
+    `"TX"`) now passes. Abbreviations are matched by exact-segment equality rather than
+    a word-boundary substring test specifically because several 2-letter codes are
+    common English words in context (`OR`, `IN`, `ME`, `HI`, `OK`, `PA`, `CO`...) —
+    e.g. `"Remote or Mississauga"` contains the word "or", which a naive check would
+    wrongly match as Oregon; exact-segment matching only fires on a real `"City, ST"`
+    shape. Verified live: a manual `--source ats` run against the 6 tracked companies
+    (used only as a fast smoke test, not the daily path) surfaced 3 new candidates
+    post-fix (Analytic Partners' Marketing Science Analyst, two Aircall roles) that the
+    old filter had been silently dropping. A full-scale `--source aggregator` run to
+    measure the fix's real impact across all boards was started but not run to
+    completion in this session (stopped manually partway through, ~2,700/4,368 Lever
+    boards checked, no errors) — see Open Items.
+35. **The score step is being removed from the Routine's instructions entirely
+    (decided 2026-09-18, in a separate session).** The live cloud Routine still runs a
+    4-step sequence including `node src/score/index.mjs --batch`, but `digest` has not
+    read that step's output (`data/evaluations.jsonl`) since #29/#32 — so the score
+    step has been running for real, burning an AI call, for no downstream effect. The
+    Routine's instructions need to be updated by hand (in the cloud Routine's own UI,
+    not a repo file) to the 3-step form in Section 8. This document's Section 8 was
+    also stale in the other direction: its "current" 3-step example was missing the
+    `--source aggregator` flag entirely (see #33) — both gaps are corrected below.
+36. **`google-sheets-jobs.mjs`'s Jobs-tab append caused a real `#REF!` in
+    production — found and fixed 2026-09-18.** The `capply_command` column (J) is an
+    `ARRAYFORMULA` living in `J1` that spills down the column on its own; it must never
+    have anything written into it. Two bugs combined to break this: (1) `appendJobsRows`
+    wrote a 10th column with an empty string into every row (`offerToRow` returned a
+    blank `capply_command` value alongside the real 9 fields) — writing even an empty
+    string into a cell blocks an `ARRAYFORMULA` from spilling into it, which is exactly
+    what Google Sheets' `#REF!`/"array result was not expanded" error means; (2) the
+    append used `insertDataOption: 'INSERT_ROWS'`, which inserts new rows above any
+    that follow rather than appending after the last row — this shifted `J1`'s formula
+    references downward on every append (observed live: `E2:E`/`G2:G` becoming
+    `E4:E`/`G4:G` after one 2-row append), corrupting the formula independently of the
+    write-into-column-J bug. **Fix:** `appendJobsRows` now writes only columns A:I
+    (`offerToRow` no longer returns a 10th value) and uses `insertDataOption:
+    'OVERWRITE'` instead of `INSERT_ROWS`, so existing rows — and the formula's cell
+    references — are never shifted. `readJobsUrls`'s read range was also narrowed from
+    `A:J` to `A:I` for consistency, though this was never the source of the bug (a read
+    past the real data does no harm). Verified live: after the fix, `node
+    src/digest/index.mjs` appended 2 real rows, `J1` still read `capply_command` with
+    no error, and the formula's references stayed at `E2:E`/`G2:G`.
 
 ---
 
@@ -278,24 +351,59 @@ diagram itself is updated.
 
 ## 3. Phase 1 — Discovery & Prefilter (Cloud, $0 AI)
 
-**Command:** `node src/scan/index.mjs`
+**Command (daily/real):** `node src/scan/index.mjs --source aggregator`
+**Command (manual/test only):** `node src/scan/index.mjs` (defaults to `--source ats`,
+scans `tracked_companies` only) or `--source all` (both)
 
 **Confirmed working end-to-end in the real cloud Routine, with real live postings
-(2026-08-26).** Scans every company in `config/portals.yml`, prefilters by
-title/blacklist/location/date, dedupes against `data/scan-history.tsv`, appends survivors
-to `data/pipeline.md`, and — since 2026-09-18 (Decisions #29, #32) — writes the same
-survivors to `data/todays-offers.json` for Phase 3 to pick up. There is no ranking or
-top-N cutoff anymore: every survivor goes through, not just the top 10 by CV-embedding
-similarity.
+(2026-08-26).** Prefilters by title/blacklist/location/date, dedupes against
+`data/scan-history.tsv`, appends survivors to `data/pipeline.md`, and — since 2026-09-18
+(Decisions #29, #32) — writes the same survivors to `data/todays-offers.json` for Phase 3
+to pick up. There is no ranking or top-N cutoff anymore: every survivor goes through, not
+just the top 10 by CV-embedding similarity.
 
-**`portals.yml` and `target_locations` fixed 2026-08-26.** Tracked companies swapped to
-confirmed-live Lever boards (PointClickCare, Analytic Partners, plus Mistral AI which
-still returns 0 — possibly a wrong/empty slug, flagged but not blocking). Title filter
-broadened from the original repo's `Intern/Internship/Stage/Stagiaire` to
+**Two discovery sources, chosen by `--source` (Decision #33):**
+- **`ats`** (the default when `--source` is omitted) — scans only the companies listed
+  in `config/portals.yml`'s `tracked_companies`. These are mock/manual-test entries as
+  of 2026-09-05 and are **not** part of the daily path — useful for a fast, small-scale
+  smoke test (`--only <slug>` narrows to one), not for real discovery at scale.
+- **`aggregator`** — what the daily Routine actually runs. Skips `tracked_companies`
+  entirely and queries the two company-agnostic aggregators configured in `portals.yml`'s
+  `aggregators:` block:
+  - **Greenhouse** (`src/scan/aggregators/greenhouse.mjs`) — ~20 curated public boards
+    (`known-greenhouse-boards.json`).
+  - **Lever** (`src/scan/aggregators/lever.mjs`) — 4,368 boards
+    (`known-lever-boards.json`, a one-time import of `Feashliaa/job-board-aggregator`'s
+    Common Crawl snapshot — a static list, not a live sync; new Lever companies since
+    the crawl won't appear until the list is refreshed by hand). Fetches all boards
+    concurrently (6 at a time, 10s timeout per board so one hung request can't stall the
+    whole run) and shuffles the board order each run so the same alphabetically-early
+    slugs don't always get checked first. `maxBoardsPerRun` is accepted by the
+    aggregator function itself but is **not currently wired through** from
+    `portals.yml`'s config — every enabled aggregator always scans its full board list
+    regardless of any cap set there (see Open Items).
+  Both aggregators tag their offers (`source: 'aggregator:lever'` /
+  `'aggregator:greenhouse'`) and feed into the exact same title/location/date prefilter
+  as `tracked_companies` results — there is no separate filtering path for aggregator
+  results.
+- **`all`** — runs both `ats` and `aggregator` sources in the same scan.
+
+**`portals.yml` and `target_locations` fixed 2026-08-26.** Title filter broadened from
+the original repo's `Intern/Internship/Stage/Stagiaire` to
 `Data/Analyst/Scientist/Engineer`. Separately, `candidate-profile.yml`'s
 `target_locations` was silently deriving to `["France", "Paris", "Remote"]` from the
 placeholder `city`/`country` — added an explicit override (`Remote, United States, USA`)
-so real US postings aren't dropped. Result: **19 real postings found** on the next run.
+so real US postings aren't dropped. Result: **19 real postings found** on the next run
+(this was measured against `tracked_companies`/`ats` mode, before the aggregator source
+existed).
+
+**Location prefilter fixed 2026-09-18 (Decision #34) — this mattered far more than the
+2026-08-26 fix above.** The `target_locations` override fixed the *default* (French)
+target zones, but the matching logic itself only recognized a location if it literally
+contained "Remote"/"United States"/"USA" — which almost no real `"City, ST"` posting
+does. This was silently discarding the overwhelming majority of aggregator results
+across all 4,368+ boards. Now fixed with real US-state matching (state names and postal
+abbreviations) — see Decision #34 for the full mechanism and how it was verified.
 
 ---
 
@@ -379,9 +487,12 @@ verify with `--dry-run` first, then a real run, before trusting it unattended.
    doesn't survive between cloud Routine runs (Decision #30). **If that read fails, the
    run stops here — no Jobs write, no email.**
 3. Offers whose `url` isn't already in the Jobs tab are appended there in **one batch
-   call**: `date_found | company | title | location | url | platform | apply_url |
-   status | notes | capply_command` (`status`/`notes`/`capply_command` left blank —
-   see the Jobs tab's own setup below).
+   call**, columns A:I only — `date_found | company | title | location | url |
+   platform | apply_url | status | notes` (`status`/`notes` left blank for the user).
+   **`capply_command` (column J) is never written at all** — fixed 2026-09-18, see
+   Decision #36. It used to be written as an always-blank 10th value, which combined
+   with `INSERT_ROWS` (also since fixed) to break the formula in production with a
+   real `#REF!` error.
 4. **Only after that append succeeds**, one row is appended to the Digest tab: `date`,
    `subject`, `job_count`, `body`. `body` is now a *summary* — new-role count, a
    breakdown by platform, top companies, and a link to open the Jobs tab — not one card
@@ -396,14 +507,21 @@ verify with `--dry-run` first, then a real run, before trusting it unattended.
 **Google Sheet:** "Daily Application Digest" (same spreadsheet for both tabs).
 - **Digest tab** — columns `date | subject | job_count | body`, unchanged.
 - **Jobs tab** — columns `date_found | company | title | location | url | platform |
-  apply_url | status | notes | capply_command` (confirmed with Rohan 2026-09-18). One-
-  time setup, done by hand, not by code: header row; a `status` dropdown (data
-  validation) with whatever values are useful (`applied`, `skip`, etc.); and a
-  `capply_command` formula. **Use an `ARRAYFORMULA` in the header row** (e.g.
+  apply_url | status | notes | capply_command` (confirmed with Rohan 2026-09-18). Code
+  only ever reads/writes columns A:I (Decision #36); column J (`capply_command`) is
+  100% owned by the sheet's own formula — code must never touch it. One-time setup,
+  done by hand, not by code: header row; a `status` dropdown (data validation) with
+  whatever values are useful (`applied`, `skip`, etc.); and the `capply_command`
+  formula itself. **Use an `ARRAYFORMULA` in the header row** (e.g.
   `={"capply_command"; ARRAYFORMULA(IF(E2:E="", "", "capply """&G2:G&""""))}` — adjust
   column letters to taste) rather than a per-row formula, so every row `digest` appends
-  picks it up automatically; a per-row formula would need `digest` to write it, which
-  it deliberately doesn't (writing into a formula column would overwrite the formula).
+  picks it up automatically. **This broke in production on 2026-09-18** (real `#REF!`
+  in `J1`, formula references shifted from `E2:E`/`G2:G` to `E4:E`/`G4:G`) because the
+  append code was writing into column J and inserting rows above existing ones — both
+  fixed, see Decision #36. If `#REF!` ever reappears: check that nothing has been typed
+  or pasted into column J below the header (select `J2:J` and delete), and that
+  `appendJobsRows` in `src/lib/google-sheets-jobs.mjs` is still using range `A:I` and
+  `insertDataOption: 'OVERWRITE'`.
 
 Spreadsheet ID in `candidate-profile.yml` as `digest_sheet_id`, shared by both tabs
 (resolution: `--sheet-id` flag → `$GOOGLE_SHEETS_DIGEST_ID` → profile). Tab names:
@@ -567,25 +685,37 @@ Every file below was opened and read directly — not assumed from the README.
 
 ## 8. Cloud Routine & Environment Configuration
 
-**Status: confirmed working end-to-end with real data 2026-08-26** (original 4-step,
-scoring-included version). **Instructions rewritten 2026-09-18** to drop the scoring
-step (Decisions #29, #32) — not yet re-verified against a real cloud Routine run; do a
-manual "Run now" and check the resulting email/Jobs tab before trusting the schedule.
+**Status (2026-09-18): the live Routine is currently out of sync with the intended
+design in two directions at once — both need a manual fix in the Routine's own cloud
+UI (not a repo file):**
+1. It's still running a 4-step sequence including `node src/score/index.mjs --batch`,
+   even though `digest` hasn't read that step's output since 2026-09-18 (Decisions
+   #29, #32, #35) — so it's spending an AI call on a step nothing downstream uses.
+2. Its scan step is missing the `--source aggregator` flag — this document previously
+   showed the "current" instructions without it too, which was simply wrong; the flag
+   is required for the Routine to actually reach the aggregator-based discovery
+   described in Section 3, rather than silently falling back to `ats` mode against the
+   6 mock `tracked_companies`.
+
+**Correct instructions, not yet applied to the live Routine as of this writing** — the
+next real "Run now" or scheduled fire will still use whatever is currently saved in the
+Routine's cloud UI until it's manually edited to match this:
 
 **Routine name:** "Job Pipeline — Scan, Score, Digest" (name kept as-is; rename to "Job
-Pipeline — Scan, Digest" if that stops being confusing — not required for correctness).
+Pipeline — Scan, Digest" once the score step is actually removed live — not required
+for correctness).
 **Repository:** `rohanaluri/claude-apply`
 **Trigger:** Schedule → Daily → 7:00 AM EDT (Decision #10)
 **Environment:** custom cloud Environment `claude-apply` — NOT the account's default
 "Daily Notifications" Environment, which belongs to an unrelated morning-news Routine.
 
-**Instructions (the Routine's actual prompt) — current, 3-step:**
+**Instructions (what the Routine's prompt SHOULD say) — 3-step:**
 
 ```
 Run the daily job-pipeline steps in this exact order, from the repo root:
 
 1. npm install
-2. node src/scan/index.mjs
+2. node src/scan/index.mjs --source aggregator
 3. node src/digest/index.mjs
 
 Run each command exactly as written — do not modify flags, do not skip
@@ -599,18 +729,19 @@ already in the Jobs tab (so weren't re-sent), and how many new rows the
 digest actually appended to the Jobs tab today.
 ```
 
-**Previous 4-step version (kept here for reference, no longer used):**
+**Previous/currently-live 4-step version (still running as of this writing, needs
+manual removal in the cloud UI):**
 
 ```
 1. npm install
-2. node src/scan/index.mjs
-3. node src/score/index.mjs --batch    # ← removed, Decision #29
+2. node src/scan/index.mjs --source aggregator
+3. node src/score/index.mjs --batch    # ← should be removed, Decisions #29, #35
 4. node src/digest/index.mjs
 ```
 
-`node src/score/index.mjs --batch` was removed from the instructions, not deleted from
-the repo — `src/score/` still exists and still works standalone (`/score <url>`,
-`npm run score:batch`) if scoring is ever worth re-enabling.
+`node src/score/index.mjs --batch` should be removed from the instructions, not
+deleted from the repo — `src/score/` still exists and still works standalone (`/score
+<url>`, `npm run score:batch`) if scoring is ever worth re-enabling.
 
 `npm install` is step 1 of the *instructions*, not the Environment's setup script —
 Decision #20 for why that split matters.
@@ -668,6 +799,38 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
 - [x] ~~Phase 3's digest still says `/apply <url>`, not `capply "<url>"`.~~ **Resolved
       2026-09-18 (Decision #32)** — the digest email no longer includes a per-job apply
       command at all; that moved to the Jobs tab's `capply_command` formula column.
+- [x] ~~`appendJobsRows` writes into the `capply_command` formula column and shifts
+      rows, breaking it with a real `#REF!`.~~ **Resolved 2026-09-18 (Decision #36)** —
+      range narrowed to A:I, `INSERT_ROWS` → `OVERWRITE`. Verified live with a real
+      digest run (2 rows appended, formula intact).
+- [x] ~~Location prefilter silently rejects nearly all real US `"City, ST"`
+      postings.~~ **Resolved 2026-09-18 (Decision #34)** — added US state name/
+      abbreviation matching. Verified live: 3 new candidates surfaced in a smoke test
+      that the old filter had been dropping.
+- [ ] **Aggregator-based daily discovery (Decision #33) has not yet been run to
+      completion since the location-prefilter fix.** A manual `--source aggregator
+      --dry-run` was started to measure the fix's real before/after impact at full
+      scale (4,368 Lever boards + ~20 Greenhouse boards) but was stopped manually
+      partway through (~2,700/4,368 Lever boards checked, no errors observed). Run it
+      to completion and compare the "after filter" counts to before the fix.
+- [ ] **The live cloud Routine's instructions are still out of sync with the intended
+      design (Section 8) as of this writing** — still 4-step with the score call, and
+      needs to be manually edited in the Routine's own cloud UI. Not a code change; a
+      config change outside this repo. Verify with a manual "Run now" after editing.
+- [ ] **`maxBoardsPerRun` is accepted by `fetchAggregator()` (both Lever and
+      Greenhouse) but is never actually read from `portals.yml`'s `aggregators:`
+      config in `src/scan/index.mjs`'s `fetchAggregatorOffers()`.** Every enabled
+      aggregator always scans its entire board list regardless of any cap set in
+      config — found while reviewing the aggregator code on 2026-09-18. Not currently
+      causing incorrect behavior (there's no cap set today, and Decision #29 already
+      removed the old top-10-results cutoff deliberately), but worth wiring through if
+      a future need arises to bound run time or board count.
+- [ ] **`src/scan/aggregators/lever.mjs`'s file-header comment is now stale.** It
+      describes a "TEMPORARY (2026-09-05)" cap of 10 new offers per scan via an
+      `index.mjs` constant called `MAX_NEW_OFFERS_PER_RUN` — that constant no longer
+      exists in `src/scan/index.mjs` (removed per Decision #29's top-10 cutoff
+      removal). The comment should be updated or removed; it currently describes
+      behavior that isn't there anymore. Cosmetic only, found 2026-09-18.
 - [ ] **`google-service-account.json`'s key was pasted into chat history during setup.**
       Rotate as routine hygiene once Phase 3 iteration settles. Low risk (Sheets-only
       scope, one non-sensitive spreadsheet, solo account).

@@ -103,7 +103,7 @@ test('appendJobsRows — n’appelle pas Sheets si la liste est vide', async () 
   assert.equal(appendCalls.length, 0);
 });
 
-test('appendJobsRows — un seul appel batch, colonnes status/notes/capply_command laissées vides', async () => {
+test('appendJobsRows — un seul appel batch, colonnes A:I seulement (capply_command jamais écrite)', async () => {
   const appendCalls = [];
   const client = fakeSheetsClient({ appendCalls });
   const offers = [
@@ -134,7 +134,12 @@ test('appendJobsRows — un seul appel batch, colonnes status/notes/capply_comma
 
   assert.equal(result.appended, 2);
   assert.equal(appendCalls.length, 1, 'un seul appel batch, pas un par job');
-  assert.equal(appendCalls[0].range, 'Jobs!A:J');
+  assert.equal(appendCalls[0].range, 'Jobs!A:I');
+  assert.equal(
+    appendCalls[0].insertDataOption,
+    'OVERWRITE',
+    'OVERWRITE (pas INSERT_ROWS) pour ne jamais décaler les références de la formule J1'
+  );
   assert.deepEqual(appendCalls[0].requestBody.values, [
     [
       '2026-09-18',
@@ -144,7 +149,6 @@ test('appendJobsRows — un seul appel batch, colonnes status/notes/capply_comma
       'https://jobs.lever.co/acme/1',
       'lever',
       'https://jobs.lever.co/acme/1/apply',
-      '',
       '',
       '',
     ],
@@ -158,7 +162,10 @@ test('appendJobsRows — un seul appel batch, colonnes status/notes/capply_comma
       '',
       '',
       '',
-      '',
     ],
   ]);
+  // Every row must have exactly 9 values (A:I) — never a 10th for col J.
+  for (const row of appendCalls[0].requestBody.values) {
+    assert.equal(row.length, 9);
+  }
 });

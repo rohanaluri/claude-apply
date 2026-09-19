@@ -18,8 +18,63 @@ function splitLocationSegments(loc) {
     .filter(Boolean);
 }
 
+// US states + DC, full name and postal abbreviation. Real ATS location
+// fields are almost always "City, ST" (e.g. "Austin, TX") or occasionally
+// "City, State" (e.g. "Austin, Texas") — never "United States" spelled out.
+// Fixed 2026-09-18: the old targetLocations substring match (matching
+// "Remote"/"United States"/"USA" literally) rejected nearly every plain
+// US city/state posting, since none of those strings appear in a normal
+// "City, ST" location. See pipeline-architecture.md Decision (2026-09-18,
+// location prefilter).
+const US_STATES = [
+  ['Alabama', 'AL'], ['Alaska', 'AK'], ['Arizona', 'AZ'], ['Arkansas', 'AR'],
+  ['California', 'CA'], ['Colorado', 'CO'], ['Connecticut', 'CT'], ['Delaware', 'DE'],
+  ['Florida', 'FL'], ['Georgia', 'GA'], ['Hawaii', 'HI'], ['Idaho', 'ID'],
+  ['Illinois', 'IL'], ['Indiana', 'IN'], ['Iowa', 'IA'], ['Kansas', 'KS'],
+  ['Kentucky', 'KY'], ['Louisiana', 'LA'], ['Maine', 'ME'], ['Maryland', 'MD'],
+  ['Massachusetts', 'MA'], ['Michigan', 'MI'], ['Minnesota', 'MN'], ['Mississippi', 'MS'],
+  ['Missouri', 'MO'], ['Montana', 'MT'], ['Nebraska', 'NE'], ['Nevada', 'NV'],
+  ['New Hampshire', 'NH'], ['New Jersey', 'NJ'], ['New Mexico', 'NM'], ['New York', 'NY'],
+  ['North Carolina', 'NC'], ['North Dakota', 'ND'], ['Ohio', 'OH'], ['Oklahoma', 'OK'],
+  ['Oregon', 'OR'], ['Pennsylvania', 'PA'], ['Rhode Island', 'RI'], ['South Carolina', 'SC'],
+  ['South Dakota', 'SD'], ['Tennessee', 'TN'], ['Texas', 'TX'], ['Utah', 'UT'],
+  ['Vermont', 'VT'], ['Virginia', 'VA'], ['Washington', 'WA'], ['West Virginia', 'WV'],
+  ['Wisconsin', 'WI'], ['Wyoming', 'WY'], ['District of Columbia', 'DC'],
+];
+
+// Whole-word match on full state names only (e.g. "Austin, Texas"). Full
+// names are distinctive enough that a word-boundary match is safe — unlike
+// the 2-letter abbreviations below, no full state name doubles as a common
+// English word ("Georgia", "Washington", etc. are unambiguous here).
+const US_STATE_NAME_RE = new RegExp(`\\b(?:${US_STATES.map(([name]) => name).join('|')})\\b`, 'i');
+
+// Exact-segment match on abbreviations only (e.g. the "TX" in "Austin, TX"
+// after splitting on the comma) — NOT a word-boundary substring match.
+// Several abbreviations are common English words/words-in-context ("OR",
+// "IN", "ME", "HI", "OK", "PA", "CO"...), so testing them against an
+// arbitrary segment risks false positives (e.g. "Remote or Mississauga"
+// contains the word "or", which would wrongly match Oregon). Requiring the
+// *entire* trimmed segment to equal the abbreviation avoids that: a real
+// abbreviation only ever appears as its own segment ("City, ST"), never
+// buried inside a longer phrase.
+const US_STATE_ABBR_SET = new Set(US_STATES.map(([, abbr]) => abbr));
+
+function isUSSegment(seg) {
+  const trimmed = seg.trim();
+  if (US_STATE_ABBR_SET.has(trimmed.toUpperCase())) return true;
+  return US_STATE_NAME_RE.test(trimmed);
+}
+
 function targetsFrance(targetLocations) {
   return (targetLocations || []).some((t) => LOCATION_FR_RE.test(String(t)));
+}
+
+// Mirrors targetsFrance — true only if targetLocations explicitly names the
+// US/USA (NOT just "Remote" — a candidate targeting France remotely also
+// has "Remote" in their list, and this fallback must never fire for them).
+const US_TARGET_RE = /\b(united states|usa|u\.s\.a?\.?)\b/i;
+function targetsUS(targetLocations) {
+  return (targetLocations || []).some((t) => US_TARGET_RE.test(String(t)));
 }
 
 export function checkLocation(offer, targetLocations) {
@@ -44,6 +99,14 @@ export function checkLocation(offer, targetLocations) {
     // city in targetLocations) and the offer's location is a recognized French
     // city, accept it. Handles ATSes that return "Paris" bare without country.
     if (targetsFrance(targetLocations) && geoSegments.some((seg) => LOCATION_FR_RE.test(seg))) {
+      return { pass: true };
+    }
+
+    // US-oriented fallback (added 2026-09-18): if the user targets the US
+    // and the offer's location names a US state, accept it — handles the
+    // overwhelmingly common "City, ST" / "City, State" shape that never
+    // spells out "United States" and was previously rejected outright.
+    if (targetsUS(targetLocations) && geoSegments.some((seg) => isUSSegment(seg))) {
       return { pass: true };
     }
 
