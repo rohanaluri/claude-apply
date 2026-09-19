@@ -730,6 +730,18 @@ async function detectBlockers(page) {
         'div.h-captcha, div.g-recaptcha'
       );
       for (const el of els) {
+        // reCAPTCHA v3's corner "protected by reCAPTCHA" badge is deliberately
+        // ALWAYS visible (Google requires the disclosure) but never requires
+        // interaction — it scores the visit silently in the background. It's
+        // a real, rendered iframe (matches the recaptcha selector above and
+        // clears the visibility check below), which previously made it
+        // indistinguishable from an active challenge and stalled the run for
+        // the full 10-minute wait on every Greenhouse page that uses it.
+        // Google always tags the badge's container with this class, so skip
+        // it specifically — a genuine visible challenge (e.g. a real
+        // checkbox or puzzle) never carries this class and still triggers
+        // the pause below as before.
+        if (el.closest('.grecaptcha-badge')) continue;
         const r = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         if (

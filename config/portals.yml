@@ -12,31 +12,18 @@
 # they cannot be added here in a way that would actually work. This file can
 # only cover companies genuinely hosted on one of the 4 supported platforms.
 #
-# NOTE (2026-09-05): tracked_companies below are mock/test entries and are
-# NOT scanned by the daily run — the daily run uses `--source aggregator`,
-# which skips tracked_companies entirely and only queries the aggregators
-# block. Left in place for manual `--source ats` / `--only <slug>` testing.
+# NOTE (2026-09-19): tracked_companies removed (was mock/test entries only).
+# The daily run uses `--source aggregator`, which never reads this list —
+# see the aggregators block below for the actual company universe. To
+# manually test one company by ATS (`--source ats --only <slug>`, or to use
+# a per-company `skip_required_any`/`target_locations` override), add an
+# entry back here, e.g.:
+#   - name: Mistral AI
+#     careers_url: https://jobs.lever.co/mistral
+#     enabled: true
+#     skip_required_any: true   # domain is implicit in the company name
 
-tracked_companies:
-  - name: Mistral AI
-    careers_url: https://jobs.lever.co/mistral
-    enabled: true
-    skip_required_any: true
-  - name: PointClickCare
-    careers_url: https://jobs.lever.co/pointclickcare
-    enabled: true
-  - name: Analytic Partners
-    careers_url: https://jobs.lever.co/analyticpartners
-    enabled: true
-  - name: Fliff
-    careers_url: https://jobs.lever.co/Fliff
-    enabled: true
-  - name: PadSplit
-    careers_url: https://jobs.lever.co/padsplit
-    enabled: true
-  - name: Aircall
-    careers_url: https://jobs.lever.co/aircall
-    enabled: true
+tracked_companies: []
 
 title_filter:
   # Titles must contain at least one positive keyword (whole-word match).
@@ -45,11 +32,18 @@ title_filter:
     - Analyst
     - Scientist
     - Engineer
+    - Analytics
 
-  # Layer 1 seniority filter: titles matching ANY of these are dropped
-  # immediately — zero AI cost. These roles consistently score 1-3 in
-  # Phase 2 against Rohan's profile (M.S. 2026 grad, internship-level
-  # experience), so scoring them wastes Claude tokens.
+  # Layer 1 seniority + relevance filter: titles matching ANY of these are
+  # dropped immediately — zero AI cost. Seniority terms consistently score
+  # 1-3 in Phase 2 against Rohan's profile (M.S. 2026 grad, internship-level
+  # experience). The rest (2026-09-19) were added after a 2,243-title dry
+  # run of the aggregator source showed the bare positive list letting
+  # through non-data/software "Engineer"/"Analyst"/"Scientist" roles —
+  # Electrical/Mechanical/Civil/Structural/Manufacturing engineers, "Data
+  # collector / Driver" (a driving job), Data Entry clerks, cleared/
+  # polygraph government roles, etc. See docs/project-notes for the full
+  # before/after counts (2,243 -> 497 candidates on that test set).
   negative:
     - Senior
     - Sr
@@ -64,8 +58,54 @@ title_filter:
     - Architect
     - Intern
     - Internship
+    - Electrical
+    - Mechanical
+    - Civil
+    - Structural
+    - Manufacturing
+    - Robotics
+    - Hardware
+    - Field
+    - Controls
+    - Automation
+    - Network
+    - Sales
+    - Driver
+    - Collector
+    - Cyber
+    - AV
+    - Security
+    - Test
+    - Quality
+    - Recruiter
+    - Recruiting
+    - Legal
+    - Attorney
+    - Nurse
+    - Clinical
+    - Physician
+    - Warehouse
+    - Retail
+    - Store
+    - Entry
+    - Clerk
+    - Technician
+    - Agent
+    - Polygraph
+    - SCI
 
-  required_any: []
+  # Domain filter layered on top of positive/negative (2026-09-19): the
+  # title must also contain one of these, so a title that only matches
+  # "Analyst"/"Engineer"/"Scientist" via the positive list but has no
+  # data/software/AI signal (e.g. "Business Systems Analyst") is dropped.
+  required_any:
+    - Data
+    - Software
+    - Analytics
+    - Machine Learning
+    - AI
+    - ML
+
   required_any_in: [title]
 
 aggregators:
