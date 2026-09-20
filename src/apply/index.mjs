@@ -64,6 +64,7 @@ import { validateProfile } from '../lib/candidate-profile.schema.mjs';
 import { detectLanguage } from './language-detect.mjs';
 import { appendApplyLog } from './apply-log.mjs';
 import { REACT_SELECT_SNIPPET } from './react-select-helper.mjs';
+import { matchEeoOption, classifyIntent, EEO_INTENT_HINTS } from './eeo-match.mjs';
 
 // ───────────────────────────────────────────────────────────── constants ────
 
@@ -201,6 +202,17 @@ const EEO_PROFILE_KEYS = {
   eeo_disability: 'disability_status',
 };
 
+/**
+ * classKeys that must ALWAYS go to review, even when the profile has a
+ * value that would otherwise auto-fill. Added 2026-09-19 for 'availability':
+ * profile.availability_start is a fixed date set once at onboarding, but the
+ * right answer to "earliest start date" genuinely depends on the date the
+ * application is actually being filled out — a stale date is worse than an
+ * empty field, so this is a deliberate decision to never auto-answer it,
+ * not a gap the classifier or profile should try to close.
+ */
+const HUMAN_ONLY_KEYS = new Set(['availability']);
+
 // ────────────────────────────────────────────────── pure helpers (tested) ────
 
 /** Accent-insensitive, case-insensitive, trimmed text comparison. Shared by
@@ -269,12 +281,21 @@ export const isNextButton = (t) => classifyButton(t) === 'next';
  */
 export function chooseOption(options, desired, classKey = '') {
   if (!Array.isArray(options) || options.length === 0) return null;
-  const want = normText(desired);
 
-  // EEO fields with no explicit profile value must land on a decline option.
-  if (classKey.startsWith('eeo_') && (want === '' || want === 'prefer not to say')) {
-    return options.find(isDeclineOption) ?? null;
+  // EEO fields (gender/ethnicity/veteran/disability) get semantic intent
+  // matching — see eeo-match.mjs for why. Replaces the old decline-only
+  // special case (2026-08-27), which only handled an EMPTY/unset profile
+  // value; a real value like "not a veteran" or "No disabilities" still
+  // fell through to matchOptionText() below and, since it essentially never
+  // shares wording with the page's own option text, silently required
+  // manual review every time (confirmed live on the Anthropic Greenhouse
+  // posting, 2026-09-19 — see field-classifier.mjs's FIX 7 comment for the
+  // matching availability bug found in the same run).
+  if (classKey.startsWith('eeo_')) {
+    return matchEeoOption(classKey, desired, options, matchOptionText);
   }
+
+  const want = normText(desired);
   if (want === '') return null;
 
   // Boolean-ish questions (sponsorship, work auth) come through as Yes/No.
@@ -429,6 +450,19 @@ export function planFields(fields, profile) {
     let classKey = classifyField({ ...f, label: labelForClass });
     if (f.kind === 'radio-group' && RADIO_INVALID_KEYS.has(classKey)) {
       classKey = 'unknown';
+    }
+
+    // Added 2026-09-19: some recognized fields must ALWAYS go to review
+    // regardless of any profile value — see HUMAN_ONLY_KEYS above. Checked
+    // before UPLOAD_KEYS/AI_KEYS/mapProfileValue so a set profile value never
+    // silently overrides this.
+    if (HUMAN_ONLY_KEYS.has(classKey)) {
+      return {
+        ...f,
+        classKey,
+        action: 'review',
+        reason: 'always reviewed by design — see HUMAN_ONLY_KEYS',
+      };
     }
 
     if (UPLOAD_KEYS.has(classKey)) {
@@ -602,6 +636,8 @@ async function expandSections(page, profile, log) {
 
 async function fillSimple(page, field, value) {
   const sel = `[data-ca-idx="${field.idx}"]`;
+  const classKey = field.classKey || '';
+  const isEeo = classKey.startsWith('eeo_');
 
   if (field.tag === 'select' && !field.isReactSelect) {
     // Check for a REAL matching option before attempting to select it —
@@ -616,13 +652,54 @@ async function fillSimple(page, field, value) {
     const optionTexts = await page
       .locator(sel)
       .evaluate((el) => Array.from(el.options).map((o) => o.textContent.trim()));
-    const matched = matchOptionText(optionTexts, value);
+    // Added 2026-09-19: EEO fields get semantic intent matching instead —
+    // see eeo-match.mjs. A profile value like "not a veteran" or "No
+    // disabilities" shares no words with a real option's wording, so
+    // matchOptionText() alone always failed this and sent it to review.
+    const matched = isEeo
+      ? matchEeoOption(classKey, value, optionTexts, matchOptionText)
+      : matchOptionText(optionTexts, value);
     if (!matched) return false;
     await page.selectOption(sel, { label: matched });
     return true;
   }
 
   if (field.isReactSelect) {
+    // Added 2026-09-19: for EEO fields, resolve to a real option BEFORE
+    // calling the snippet whenever one is visible ahead of time (e.g. a
+    // hidden native <select> mirror exposing selectOptions) — same semantic
+    // matching as the plain-<select> branch above. When no real option list
+    // is visible ahead of time, fall back to a short, deliberately narrow
+    // intent fragment (EEO_INTENT_HINTS) for the snippet's own
+    // UNAMBIGUOUS-substring matcher to find on the actual rendered menu —
+    // never the raw profile sentence itself, which almost never appears
+    // verbatim on a real form. If the profile value's intent has no safe
+    // hint (e.g. "affirmative", too likely to collide with the negative
+    // option's wording), this returns false and the field goes to review
+    // instead of risking a wrong click.
+    if (isEeo) {
+      const knownOptions = Array.isArray(field.selectOptions) ? field.selectOptions : [];
+      const resolved = matchEeoOption(classKey, value, knownOptions, matchOptionText);
+      if (resolved) {
+        const res = await page.evaluate(
+          `(() => { const controlSelector = ${JSON.stringify(sel)}; const optionText = ${JSON.stringify(resolved)}; return ${REACT_SELECT_SNIPPET}; })()`
+        );
+        return !!(res && res.ok);
+      }
+      // No real option list visible ahead of time — try each candidate hint
+      // in turn (see EEO_INTENT_HINTS) until one resolves unambiguously on
+      // the actual rendered menu, or none do.
+      const intent = classifyIntent(value);
+      const hints = EEO_INTENT_HINTS[classKey]?.[intent] ?? [];
+      for (const hint of hints) {
+        const res = await page.evaluate(
+          `(() => { const controlSelector = ${JSON.stringify(sel)}; const optionText = ${JSON.stringify(hint)}; return ${REACT_SELECT_SNIPPET}; })()`
+        );
+        if (res && res.ok) return true;
+      }
+      return false;
+    }
+
     const res = await page.evaluate(
       `(() => { const controlSelector = ${JSON.stringify(sel)}; const optionText = ${JSON.stringify(String(value))}; return ${REACT_SELECT_SNIPPET}; })()`
     );
@@ -631,7 +708,7 @@ async function fillSimple(page, field, value) {
 
   // Native setter so React/Vue state actually updates.
   return page.evaluate(
-    ({ sel, value }) => {
+    ({ sel, value, classKey }) => {
       const el = document.querySelector(sel);
       if (!el) return false;
       const proto =
@@ -642,9 +719,22 @@ async function fillSimple(page, field, value) {
       setter.call(el, value);
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
+      // FIX 2026-09-19: a phone widget (e.g. intl-tel-input, seen live on
+      // the Anthropic Greenhouse posting — class "iti__tel-input") reformats
+      // the typed value as you go ("+16782835911" -> "+1 678-283-5911"), so
+      // comparing el.value === value against our raw digits always failed,
+      // even though the number landed correctly — logged as "fill
+      // verification failed" despite the visible field being right. For
+      // classKey === 'phone' specifically, compare digits only so
+      // formatting differences (spaces, dashes, a leading "+") don't count
+      // as a mismatch.
+      if (classKey === 'phone') {
+        const digitsOnly = (s) => String(s ?? '').replace(/\D/g, '');
+        return digitsOnly(el.value) === digitsOnly(value) && digitsOnly(el.value).length > 0;
+      }
       return el.value === value;
     },
-    { sel, value: String(value) }
+    { sel, value: String(value), classKey }
   );
 }
 
@@ -730,18 +820,6 @@ async function detectBlockers(page) {
         'div.h-captcha, div.g-recaptcha'
       );
       for (const el of els) {
-        // reCAPTCHA v3's corner "protected by reCAPTCHA" badge is deliberately
-        // ALWAYS visible (Google requires the disclosure) but never requires
-        // interaction — it scores the visit silently in the background. It's
-        // a real, rendered iframe (matches the recaptcha selector above and
-        // clears the visibility check below), which previously made it
-        // indistinguishable from an active challenge and stalled the run for
-        // the full 10-minute wait on every Greenhouse page that uses it.
-        // Google always tags the badge's container with this class, so skip
-        // it specifically — a genuine visible challenge (e.g. a real
-        // checkbox or puzzle) never carries this class and still triggers
-        // the pause below as before.
-        if (el.closest('.grecaptcha-badge')) continue;
         const r = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         if (

@@ -161,9 +161,20 @@ const RULES = [
   // expecting generic "Start Date" to mean a job's start date) to specifically
   // "earliest start", matching the actual real-world label that caused Fix 1. Restored
   // "start date"/"date de debut" to experience_start, where they originally belonged.
+  // FIX 7 (2026-09-19, live test on Anthropic Greenhouse posting): the literal
+  // "earliest start" phrase never matches real-world wording like "When is
+  // the earliest you would want to start working with us?" — "earliest" and
+  // "start" are separated by several words. That question was misclassified
+  // as experience_start and filled with the candidate's ADP job start date
+  // (2024-05-01) instead of being left for the candidate's own availability.
+  // Widened to "earliest.*start" (still anchored on "earliest" so it can't
+  // start matching bare "start date" the way FIX 6 was narrowed to prevent).
+  // See also index.mjs's HUMAN_ONLY_KEYS: this question always goes to
+  // review now regardless of profile.availability_start, since the right
+  // answer changes with the date the application is actually filled out.
   {
     key: 'availability',
-    when: (f) => test_norm(/availability|earliest start|disponibilite/, f.label, f.name),
+    when: (f) => test_norm(/availability|earliest.*start|disponibilite/, f.label, f.name),
   },
   {
     key: 'experience_start',

@@ -39,6 +39,16 @@ export const REACT_SELECT_SNIPPET = `(async () => {
       new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }),
     );
 
+  // Closes THIS control's own menu on every failure path below. Added
+  // 2026-09-19 alongside removing the document-wide menu fallback (below):
+  // a field we couldn't resolve should never leave its dropdown open for a
+  // LATER field's lookup to stumble into.
+  const closeMenu = () => {
+    control.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+  };
+
   fire(control, 'mousedown');
   fire(control, 'mouseup');
 
@@ -47,15 +57,22 @@ export const REACT_SELECT_SNIPPET = `(async () => {
     control.parentElement ||
     document;
 
+  // FIX 2026-09-19: no longer falls back to document.querySelector('.select__menu')
+  // when this control's own container doesn't have one open. react-select
+  // often portals its menu to document.body, so that fallback was never
+  // actually scoped to THIS control — if an earlier field on the same page
+  // failed to resolve and left its own menu open, this control could pick up
+  // THAT field's menu instead and silently click its option onto the wrong
+  // field. Now: no menu found in our own container within the timeout means
+  // this field's menu genuinely never opened, full stop.
   let menu = null;
   for (let i = 0; i < 30; i++) {
-    menu =
-      container.querySelector('.select__menu') ||
-      document.querySelector('.select__menu');
+    menu = container.querySelector('.select__menu');
     if (menu) break;
     await sleep(50);
   }
   if (!menu) {
+    closeMenu();
     return { ok: false, code: 'MENU_NOT_OPENED' };
   }
 
@@ -71,8 +88,22 @@ export const REACT_SELECT_SNIPPET = `(async () => {
     matchIdx = labels.findIndex((l) =>
       l.toLowerCase().startsWith(targetLower),
     );
+  if (matchIdx < 0) {
+    // UNAMBIGUOUS substring match only — added 2026-09-19, same "never
+    // guess" contract as matchOptionText()/matchEeoOption(): a short intent
+    // fragment (e.g. "not a veteran") can find its real option even when the
+    // exact page wording isn't known ahead of time, but only when it's a
+    // substring of EXACTLY ONE rendered option — two matches means ambiguous,
+    // and this returns no match rather than picking one.
+    const containsIdx = [];
+    labels.forEach((l, i) => {
+      if (l.toLowerCase().includes(targetLower)) containsIdx.push(i);
+    });
+    if (containsIdx.length === 1) matchIdx = containsIdx[0];
+  }
 
   if (matchIdx < 0) {
+    closeMenu();
     return { ok: false, code: 'OPTION_NOT_FOUND', found: labels };
   }
 
@@ -111,6 +142,7 @@ export const REACT_SELECT_SNIPPET = `(async () => {
     await sleep(50);
   }
   if (!appliedValue) {
+    closeMenu();
     return { ok: false, code: 'SELECTION_NOT_APPLIED', found: labels };
   }
 
