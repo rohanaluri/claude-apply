@@ -10,7 +10,14 @@
 // anything that needs the form directly (the Jobs tab, capply). Falls back
 // to '' if Lever ever omits it, rather than guessing at hostedUrl + '/apply'
 // here — src/apply/index.mjs has its own safety net for that.
-export async function fetchLever(slug, companyName) {
+// `includeBody` (default true, unchanged for every existing caller): Lever's
+// API always sends descriptionPlain regardless of any request param (no
+// server-side toggle like Greenhouse's ?content=true), so this can't reduce
+// the network payload — but passing `{ includeBody: false }` still drops
+// the text from the returned offer object, so it isn't retained across a
+// long-running scan. Added 2026-09-20 for the aggregators, same reasoning
+// as fetchGreenhouse's includeBody.
+export async function fetchLever(slug, companyName, { includeBody = true } = {}) {
   const url = `https://api.lever.co/v0/postings/${slug}?mode=json`;
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'claude-apply-scan/1.0' },
@@ -28,7 +35,7 @@ export async function fetchLever(slug, companyName) {
     title: p.text || '',
     company: companyName,
     location: p.categories?.location || '',
-    body: p.descriptionPlain || '',
+    body: includeBody ? p.descriptionPlain || '' : '',
     platform: 'lever',
   }));
 }

@@ -22,8 +22,18 @@ export function stripHtml(html) {
   return out;
 }
 
-export async function fetchGreenhouse(slug, companyName) {
-  const url = `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`;
+// `includeBody` (default true, unchanged for every existing caller):
+// pass `{ includeBody: false }` to skip `?content=true` entirely — no full
+// HTML job description is downloaded or stripped, `body` comes back ''.
+// Added 2026-09-20 for the aggregators: at thousands of boards, downloading
+// and HTML-stripping every posting's full description before any keyword
+// filter has run is what caused an out-of-memory crash, and the description
+// text isn't used again until Phase 2 re-fetches it independently anyway
+// (fetchOfferBody) — so fetching it here was pure waste for that path.
+export async function fetchGreenhouse(slug, companyName, { includeBody = true } = {}) {
+  const url = includeBody
+    ? `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`
+    : `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`;
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'claude-apply-scan/1.0' },
   });
@@ -37,7 +47,7 @@ export async function fetchGreenhouse(slug, companyName) {
     title: j.title || '',
     company: companyName,
     location: j.location?.name || '',
-    body: stripHtml(j.content || ''),
+    body: includeBody ? stripHtml(j.content || '') : '',
     platform: 'greenhouse',
   }));
 }

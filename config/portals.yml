@@ -109,6 +109,11 @@ title_filter:
   required_any_in: [title]
 
 aggregators:
+  # Greenhouse aggregator: board list expanded 2026-09-20 from a ~20-company
+  # hand-curated list to 8,333 boards, imported the same way as the Lever
+  # list below (Feashliaa/job-board-aggregator, Common Crawl-harvested,
+  # CC BY-NC 4.0). Scans ALL boards every run (no maxBoardsPerRun cap) —
+  # Phase 1 is $0 AI cost, so there's no reason to skip boards.
   greenhouse:
     enabled: true
     keywords: []
@@ -120,6 +125,16 @@ aggregators:
   # narrows the results down to the top 10 before any Claude tokens are
   # spent in Phase 2.
   lever:
+    enabled: true
+    keywords: []
+    locations: []
+
+  # Ashby aggregator: new 2026-09-20. Board list is known-ashby-boards.json,
+  # a one-time import of Feashliaa/job-board-aggregator's ashby_companies.json
+  # (3,161 slugs, same source/method/license as the Lever and expanded
+  # Greenhouse lists above). Scans ALL boards every run (no maxBoardsPerRun
+  # cap) for the same $0-AI-cost reason.
+  ashby:
     enabled: true
     keywords: []
     locations: []

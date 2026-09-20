@@ -1,36 +1,36 @@
-// Public Lever aggregator.
+// Public Ashby aggregator.
 //
-// Same purpose as aggregators/greenhouse.mjs — discover offers across MANY
-// Lever-hosted boards without requiring each company to be declared in
-// portals.yml. Uses the same public API (`api.lever.co`) already used by
-// ats/lever.mjs for tracked_companies.
+// Same purpose as aggregators/lever.mjs and aggregators/greenhouse.mjs —
+// discover offers across MANY Ashby-hosted boards without requiring each
+// company to be declared in portals.yml. Uses the same public API
+// (`api.ashbyhq.com`) already used by ats/ashby.mjs for tracked_companies.
 //
-// Board list source: known-lever-boards.json, a one-time import of
-// Feashliaa/job-board-aggregator's data/lever_companies.json (4,368 slugs,
-// harvested from Common Crawl — see that repo's README). This is a static
-// snapshot, not a live sync: new Lever companies that started after that
-// crawl won't appear here until the list is refreshed by hand.
+// Board list source: known-ashby-boards.json, a one-time import of
+// Feashliaa/job-board-aggregator's data/ashby_companies.json (3,161 slugs,
+// harvested from Common Crawl — see that repo's README). Same source and
+// method as known-lever-boards.json's import. This is a static snapshot,
+// not a live sync: new Ashby companies that started after that crawl won't
+// appear here until the list is refreshed by hand. Per that repo's README,
+// the curated `data/` datasets are licensed CC BY-NC 4.0 (non-commercial
+// use, attribution required) — fine for this personal job-search tool, not
+// for redistribution or commercial use.
 //
-// TEMPORARY (2026-09-05): to keep Phase 2 cheap while we validate this
-// works, the daily run caps at 10 new offers per scan and does NOT
-// accumulate a backlog — anything beyond 10 is simply not looked at that
-// day, not queued. See index.mjs's MAX_NEW_OFFERS_PER_RUN. Revisit once
-// real volume is observed.
+// Modeled on aggregators/lever.mjs rather than aggregators/greenhouse.mjs:
+// at 3,161 boards this is much closer to Lever's scale than to Greenhouse's
+// old 20-board list, so it carries the same per-board timeout and
+// shuffle/progress-logging protection Lever needed at scale.
 
-import { fetchLever } from '../ats/lever.mjs';
+import { fetchAshby } from '../ats/ashby.mjs';
 import { pLimit } from '../../lib/p-limit.mjs';
 import { checkTitle } from '../../lib/prefilter-rules.mjs';
-import knownBoards from './known-lever-boards.json' with { type: 'json' };
+import knownBoards from './known-ashby-boards.json' with { type: 'json' };
 
 const FETCH_CONCURRENCY = 6;
 
-// TEMPORARY (2026-09-05): fetchLever() has no built-in timeout. At 4,368
-// boards, even one hung request (no response, not even an error) permanently
-// occupies one of only 6 concurrency slots and stalls the whole run —
-// same failure shape as Decision #26 in pipeline-architecture.md
-// (Playwright's selectOption() not failing fast). This does NOT cancel the
-// underlying HTTP request (fetchLever takes no AbortSignal) — it just stops
-// waiting on it so the aggregator can move on to the next board.
+// Same rationale as lever.mjs: fetchAshby() has no built-in timeout, and one
+// hung request would permanently occupy one of only 6 concurrency slots and
+// stall the whole run. Does NOT cancel the underlying HTTP request — just
+// stops waiting on it so the aggregator can move on to the next board.
 const BOARD_FETCH_TIMEOUT_MS = 10_000;
 
 function withTimeout(promise, ms, label) {
@@ -86,11 +86,6 @@ export async function fetchAggregator({
   const locationRe = compileSubstringRegex(locations);
 
   const shuffled = shuffle(boards.filter((b) => b && typeof b.slug === 'string'));
-  // TEMPORARY (2026-09-05): cap how many boards get FETCHED this run, not
-  // just how many offers get kept. Without this, every run checks all
-  // 4,368 boards regardless of how few offers you actually want — a
-  // multi-minute run for a 10-offer result. Random shuffle happens first,
-  // so which boards get checked still varies day to day.
   const validBoards =
     Number.isFinite(maxBoardsPerRun) && maxBoardsPerRun < shuffled.length
       ? shuffled.slice(0, maxBoardsPerRun)
@@ -101,7 +96,7 @@ export async function fetchAggregator({
   const PROGRESS_EVERY = 100;
   const startedAt = Date.now();
   process.stderr.write(
-    `[lever aggregator] scanning ${validBoards.length}/${shuffled.length} boards (concurrency ${FETCH_CONCURRENCY}, ${BOARD_FETCH_TIMEOUT_MS}ms/board timeout)...\n`
+    `[ashby aggregator] scanning ${validBoards.length}/${shuffled.length} boards (concurrency ${FETCH_CONCURRENCY}, ${BOARD_FETCH_TIMEOUT_MS}ms/board timeout)...\n`
   );
 
   // Filtering happens INSIDE each board's own callback, immediately after
@@ -122,12 +117,12 @@ export async function fetchAggregator({
         const company = board.company || board.slug;
         try {
           const raw = await withTimeout(
-            fetchLever(board.slug, company, { includeBody: false }),
+            fetchAshby(board.slug, company, { includeBody: false }),
             BOARD_FETCH_TIMEOUT_MS,
             board.slug
           );
           for (const o of raw) {
-            const tagged = { ...o, source: 'aggregator:lever' };
+            const tagged = { ...o, source: 'aggregator:ashby' };
             if (titleRe && !titleRe.test(tagged.title || '')) continue;
             if (locationRe && !locationRe.test(tagged.location || '')) continue;
             if (titleFilter && !checkTitle(tagged, titleFilter).pass) continue;
@@ -139,7 +134,7 @@ export async function fetchAggregator({
           completed++;
           if (completed % PROGRESS_EVERY === 0 || completed === validBoards.length) {
             process.stderr.write(
-              `[lever aggregator] ${completed}/${validBoards.length} boards checked\n`
+              `[ashby aggregator] ${completed}/${validBoards.length} boards checked\n`
             );
           }
           if (typeof onProgress === 'function') onProgress(1);
@@ -149,7 +144,7 @@ export async function fetchAggregator({
   );
 
   const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
-  process.stderr.write(`[lever aggregator] done in ${elapsedSec}s\n`);
+  process.stderr.write(`[ashby aggregator] done in ${elapsedSec}s\n`);
 
   return { offers, warnings };
 }

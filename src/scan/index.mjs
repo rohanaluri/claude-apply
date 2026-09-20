@@ -21,8 +21,18 @@ import { fetchGreenhouse } from './ats/greenhouse.mjs';
 import { fetchAshby } from './ats/ashby.mjs';
 import { fetchWorkable } from './ats/workable.mjs';
 import { fetchWorkday } from './ats/workday.mjs';
-import { fetchAggregator as fetchGreenhouseAggregator } from './aggregators/greenhouse.mjs';
-import { fetchAggregator as fetchLeverAggregator } from './aggregators/lever.mjs';
+import {
+  fetchAggregator as fetchGreenhouseAggregator,
+  knownBoards as knownGreenhouseBoards,
+} from './aggregators/greenhouse.mjs';
+import {
+  fetchAggregator as fetchLeverAggregator,
+  knownBoards as knownLeverBoards,
+} from './aggregators/lever.mjs';
+import {
+  fetchAggregator as fetchAshbyAggregator,
+  knownBoards as knownAshbyBoards,
+} from './aggregators/ashby.mjs';
 import { runPrefilter } from '../lib/prefilter-rules.mjs';
 import { fetchOfferBody } from './fetch-offer-body.mjs';
 import { appendFilteredOut } from '../lib/jsonl-writer.mjs';
@@ -60,53 +70,111 @@ const DISPATCH = {
 const AGGREGATOR_DISPATCH = {
   greenhouse: fetchGreenhouseAggregator,
   lever: fetchLeverAggregator,
+  ashby: fetchAshbyAggregator,
 };
+
+// Default board counts per aggregator, used only to size the combined
+// progress counter below (falls back to these when portals.yml doesn't
+// override `boards` for that aggregator).
+const DEFAULT_KNOWN_BOARDS = {
+  greenhouse: knownGreenhouseBoards,
+  lever: knownLeverBoards,
+  ashby: knownAshbyBoards,
+};
+
+// How often to print the combined cross-aggregator progress line. Each
+// aggregator also logs its own "[lever aggregator] N/M boards checked"
+// lines every 100 boards (useful when debugging one aggregator in
+// isolation); this is the coarser, combined total across all of them run
+// this scan, printed every 1,000 boards so a full ~15k-board run doesn't
+// spam the terminal.
+const COMBINED_PROGRESS_MILESTONE = 1000;
 
 const VALID_SOURCES = new Set(['ats', 'aggregator', 'all']);
 
-async function fetchAggregatorOffers(aggregatorsConfig) {
+async function fetchAggregatorOffers(aggregatorsConfig, titleFilter = null) {
   const results = [];
   if (!aggregatorsConfig || typeof aggregatorsConfig !== 'object') return results;
-  for (const [name, cfg] of Object.entries(aggregatorsConfig)) {
-    if (!cfg || cfg.enabled === false) continue;
-    const fn = AGGREGATOR_DISPATCH[name];
-    if (!fn) {
-      results.push({
-        company: `${name} aggregator`,
-        platform: `aggregator:${name}`,
-        offers: [],
-        fetchWarnings: [],
-        error: `unknown aggregator "${name}"`,
-      });
-      continue;
+
+  const enabled = Object.entries(aggregatorsConfig).filter(([, cfg]) => cfg && cfg.enabled !== false);
+
+  // Total boards across every enabled aggregator, known up front, so the
+  // combined counter can print "N/total" rather than just "N so far".
+  const totalBoards = enabled.reduce((sum, [name, cfg]) => {
+    const count =
+      Array.isArray(cfg.boards) && cfg.boards.length > 0
+        ? cfg.boards.length
+        : (DEFAULT_KNOWN_BOARDS[name]?.length ?? 0);
+    return sum + count;
+  }, 0);
+
+  let combinedCompleted = 0;
+  const startedAt = Date.now();
+  const onProgress = () => {
+    combinedCompleted++;
+    if (combinedCompleted % COMBINED_PROGRESS_MILESTONE === 0 || combinedCompleted === totalBoards) {
+      const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(0);
+      process.stderr.write(
+        `[scan] ${combinedCompleted.toLocaleString()}/${totalBoards.toLocaleString()} boards checked (${elapsedSec}s elapsed)\n`
+      );
     }
-    try {
-      const fnArgs = {
-        keywords: cfg.keywords || [],
-        locations: cfg.locations || [],
-        limit: cfg.limit ?? Infinity,
-      };
-      if (Array.isArray(cfg.boards) && cfg.boards.length > 0) {
-        fnArgs.boards = cfg.boards;
+  };
+
+  // Run every enabled aggregator CONCURRENTLY with the others, not one after
+  // another. Each aggregator hits its own API host (boards-api.greenhouse.io,
+  // api.lever.co, api.ashbyhq.com) and already caps its own internal
+  // concurrency at 6 in-flight requests, so running all three at once means
+  // up to 18 total in-flight requests across three unrelated hosts — no
+  // shared rate limit to worry about. Previously this was a sequential
+  // `for...of` loop with `await` inside, so the real run time was
+  // Greenhouse-time + Lever-time + Ashby-time added together; this makes it
+  // ~max(Greenhouse-time, Lever-time, Ashby-time) instead, and — just as
+  // importantly for reading the terminal output — the per-aggregator log
+  // lines now interleave, so you see all three actually running at once
+  // instead of one finishing before the next one's first line appears.
+  const settled = await Promise.all(
+    enabled.map(async ([name, cfg]) => {
+      const fn = AGGREGATOR_DISPATCH[name];
+      if (!fn) {
+        return {
+          company: `${name} aggregator`,
+          platform: `aggregator:${name}`,
+          offers: [],
+          fetchWarnings: [],
+          error: `unknown aggregator "${name}"`,
+        };
       }
-      const { offers, warnings } = await fn(fnArgs);
-      results.push({
-        company: `${name} aggregator`,
-        platform: `aggregator:${name}`,
-        offers,
-        fetchWarnings: (warnings || []).map((w) => `${w.slug}: ${w.error}`),
-        error: null,
-      });
-    } catch (err) {
-      results.push({
-        company: `${name} aggregator`,
-        platform: `aggregator:${name}`,
-        offers: [],
-        fetchWarnings: [],
-        error: err?.message || 'aggregator fetch failed',
-      });
-    }
-  }
+      try {
+        const fnArgs = {
+          keywords: cfg.keywords || [],
+          locations: cfg.locations || [],
+          limit: cfg.limit ?? Infinity,
+          onProgress,
+          titleFilter,
+        };
+        if (Array.isArray(cfg.boards) && cfg.boards.length > 0) {
+          fnArgs.boards = cfg.boards;
+        }
+        const { offers, warnings } = await fn(fnArgs);
+        return {
+          company: `${name} aggregator`,
+          platform: `aggregator:${name}`,
+          offers,
+          fetchWarnings: (warnings || []).map((w) => `${w.slug}: ${w.error}`),
+          error: null,
+        };
+      } catch (err) {
+        return {
+          company: `${name} aggregator`,
+          platform: `aggregator:${name}`,
+          offers: [],
+          fetchWarnings: [],
+          error: err?.message || 'aggregator fetch failed',
+        };
+      }
+    })
+  );
+  results.push(...settled);
   return results;
 }
 
@@ -227,7 +295,7 @@ export async function runScan(opts) {
     ? await Promise.all(companies.map((c) => limit(() => fetchCompanyOffers(c))))
     : [];
   const aggregatorResults = wantsAggregator
-    ? await fetchAggregatorOffers(portalsConfig.aggregators)
+    ? await fetchAggregatorOffers(portalsConfig.aggregators, whitelist)
     : [];
 
   const fetchResults = [...atsResults, ...aggregatorResults];
@@ -514,6 +582,22 @@ export function formatSummary(result, dryRun) {
     lines.push(`  + ${o.company.padEnd(18)} | ${o.title}`);
   }
   lines.push('');
+
+  // Full company/title/URL + ready-to-paste capply command for every offer
+  // that passed the keyword/location/dedup filter this run. Prefers
+  // apply_url over url when both exist (Lever's applyUrl is the direct
+  // application-form link, per Decision #28 — url stays the dedupe key).
+  if (result.added.length > 0) {
+    lines.push('Offres passées au filtre (avec commande capply) :');
+    lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    for (const o of result.added) {
+      const applyUrl = o.apply_url || o.url;
+      lines.push(`  ${o.company} — ${o.title}`);
+      lines.push(`    ${applyUrl}`);
+      lines.push(`    capply "${applyUrl}"`);
+    }
+    lines.push('');
+  }
   if (dryRun) {
     lines.push('(dry-run — aucun fichier modifié)');
   } else {

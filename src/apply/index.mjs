@@ -796,11 +796,16 @@ async function fillLocationAutocomplete(page, field, value) {
  * Both signals are deliberately narrow, because a false positive here is
  * expensive: it stalls the run for the full CAPTCHA_MAX_WAIT_MS waiting on a
  * challenge that was never there. Specifically:
- *   - the widget must be VISIBLE (real rendered size), since Lever and others
- *     embed a dormant/invisible captcha widget on every page for passive
- *     bot-scoring;
+ *   - the widget must be VISIBLE (real rendered size, and no hidden ancestor),
+ *     since Lever and others embed a dormant/invisible captcha widget on
+ *     every page for passive bot-scoring;
+ *   - reCAPTCHA v3's floating badge (seen on Greenhouse) is excluded outright
+ *     even though it IS visible — it's passive scoring like the invisible
+ *     widgets above, just rendered instead of hidden, and never presents a
+ *     challenge to solve;
  *   - the text patterns match active-challenge phrasing only, never the
- *     "protected by hCaptcha" boilerplate that footers every Lever page.
+ *     "protected by hCaptcha" / "protected by reCAPTCHA" boilerplate that
+ *     footers every Lever/Greenhouse page.
  */
 async function detectBlockers(page) {
   const info = await page.evaluate(`(() => ({
@@ -819,17 +824,27 @@ async function detectBlockers(page) {
         'iframe[src*="turnstile"], div[class*="cf-turnstile"], ' +
         'div.h-captcha, div.g-recaptcha'
       );
-      for (const el of els) {
-        const r = el.getBoundingClientRect();
-        const style = window.getComputedStyle(el);
-        if (
-          r.width > 10 &&
-          r.height > 10 &&
-          style.display !== 'none' &&
-          style.visibility !== 'hidden'
-        ) {
-          return true;
+      const isRendered = (node) => {
+        const r = node.getBoundingClientRect();
+        if (r.width <= 10 || r.height <= 10) return false;
+        // Walk ancestors: some widgets hide their challenge via a
+        // hidden/opacity-0 wrapper rather than styling the iframe itself.
+        for (let n = node; n && n.nodeType === 1; n = n.parentElement) {
+          const s = window.getComputedStyle(n);
+          if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) {
+            return false;
+          }
         }
+        return true;
+      };
+      for (const el of els) {
+        // reCAPTCHA v3's floating badge (Greenhouse and others) is passive
+        // scoring, not a challenge — it's always visible and never asks the
+        // user to do anything, so it must never trip this check.
+        if (el.closest('.grecaptcha-badge')) continue;
+        const elSrc = el.getAttribute('src') || '';
+        if (elSrc.includes('/anchor') && elSrc.includes('size=invisible')) continue;
+        if (isRendered(el)) return true;
       }
       return false;
     })(),

@@ -1,7 +1,13 @@
 // Fetcher for Ashby-hosted job boards.
 // Endpoint: GET https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=false
 
-export async function fetchAshby(slug, companyName) {
+// `includeBody` (default true, unchanged for every existing caller): Ashby's
+// API always sends descriptionPlain regardless of any request param, so
+// this can't reduce the network payload — but passing `{ includeBody:
+// false }` still drops the text from the returned offer object, so it
+// isn't retained across a long-running scan. Added 2026-09-20 for the
+// aggregator, same reasoning as fetchGreenhouse's includeBody.
+export async function fetchAshby(slug, companyName, { includeBody = true } = {}) {
   const url = `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=false`;
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'claude-apply-scan/1.0' },
@@ -16,7 +22,7 @@ export async function fetchAshby(slug, companyName) {
     title: j.title || '',
     company: companyName,
     location: j.location || '',
-    body: j.descriptionPlain || '',
+    body: includeBody ? j.descriptionPlain || '' : '',
     platform: 'ashby',
   }));
 }
