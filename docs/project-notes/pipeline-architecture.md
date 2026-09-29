@@ -307,8 +307,24 @@ repeating it.
     every board and has exactly the same field ids as the regular Greenhouse job page
     `capply` was tested on. `url` is unchanged on both (still the dedupe key).
     Verified: all 78 selected jobs in a live scan had an `apply_url`, and all 78 links
-    loaded. **Not yet verified:** a real `capply` run on the embed URL and on an Ashby
-    `/application` page.
+    loaded. `capply` on the embed URL was then confirmed working live; Ashby needed
+    #43 first.
+43. **`capply` waits for client-rendered forms; title parsing covers Ashby and the
+    Greenhouse embed form (2026-09-29).** The first live Ashby run found 0 fields and
+    detected `language=fr` with company and role swapped. Ashby's HTML contains no inputs
+    — the form is built client-side and appeared 1.2-3s after DOMContentLoaded, while
+    `capply` scanned at a fixed `NAV_SETTLE_MS` (1.2s) and read an empty page (so
+    `detectLanguage` fell back to French). `capply` now polls for a visible field (up to
+    `FORM_RENDER_TIMEOUT_MS`, 15s) before reading page metadata or scanning. The poll uses
+    `page.evaluate`, not `page.waitForFunction`: Ashby's Content Security Policy forbids
+    `unsafe-eval`, which Playwright needs for string predicates, so `waitForFunction`
+    throws on every Ashby page. `parseJobTitle()` now understands Ashby's
+    `"<role> @ <company>"` and the Greenhouse embed form's `"Job Application for <role>
+    at <company>"` as well as Lever's `"<company> - <role>"`. Verified with
+    `capply --dry-run` against a headless Chrome over CDP: the same Ashby posting went
+    from 0 fields to 12 planned (name, email, LinkedIn, resume, sponsorship filled;
+    pronouns/location to review), with correct company/role/language; Greenhouse and
+    Lever unchanged (~2.5s each).
 
 ---
 
@@ -1011,8 +1027,10 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       through `chooseOption()` at all.)
 - [ ] **Cover-letter generation isn't wired into `index.mjs`.** `renderLatex()` exists and
       is real, but `cover_letter_*` fields currently route to manual review.
-- [ ] **Run `capply` once on a Greenhouse `embed/job_app` URL and once on an Ashby
-      `/application` URL** (Decision #42) — both are new apply-link shapes.
+- [ ] **Run `capply` for real on an Ashby `/application` URL** (Decisions #42, #43).
+      Greenhouse's embed URL is confirmed working live; Ashby is verified only with
+      `--dry-run` so far. Ashby's Yes/No questions render as buttons, and its location
+      field is an autocomplete — watch those two.
 - [ ] **Phase 4 tested live on two ATSes only:** Lever (PointClickCare, Epoch AI) and,
       since 2026-09-19, Greenhouse (Anthropic). Ashby apply is unverified, and each
       platform has only one or two real forms behind it.

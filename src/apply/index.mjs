@@ -70,6 +70,12 @@ import { matchEeoOption, classifyIntent, EEO_INTENT_HINTS } from './eeo-match.mj
 
 const MAX_STEPS = 6; // hard cap on multi-step "Next" advances
 const NAV_SETTLE_MS = 1200;
+// Ashby builds its whole form client-side: the HTML has no inputs, and in a
+// live probe (2026-09-29) the fields appeared ~1.2-3s after DOMContentLoaded
+// — so a fixed NAV_SETTLE_MS scan found 0 fields and read an empty page
+// (which also made detectLanguage fall back to French). Wait for a visible
+// field before reading the page, up to this long.
+const FORM_RENDER_TIMEOUT_MS = 15000;
 
 // Captcha pause/resume: how often to re-check, and how long to wait before
 // giving up. Waiting is a UX choice, not a workaround — we never attempt to
@@ -552,6 +558,30 @@ export function planFields(fields, profile) {
   });
 }
 
+// Derives { role, company } from document.title and the page's h1.
+//   Ashby:       "<role> @ <company>"
+//   Greenhouse:  "Job Application for <role> at <company>"
+//   Lever:  "<company> - <role>" (its h1 often repeats the full title rather
+//           than giving just the role, so fall back to splitting the title)
+export function parseJobTitle(title, h1) {
+  const t = (title || '').trim();
+  const heading = (h1 || '').trim();
+  const at = t.match(/^(.+?)\s+@\s+(.+)$/);
+  if (at) return { role: heading || at[1].trim(), company: at[2].trim() };
+  const gh = t.match(/^Job Application for (.+) at (.+)$/i);
+  if (gh) return { role: gh[1].trim(), company: gh[2].trim() };
+
+  const titleParts = t
+    .split(/[-|–]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  let role = heading;
+  if (!role || role === t) {
+    role = titleParts.length > 1 ? titleParts.slice(1).join(' - ') : t;
+  }
+  return { role, company: titleParts.length > 1 ? titleParts[0] : null };
+}
+
 // ─────────────────────────────────────────────────────── browser helpers ────
 
 const scanScript = `(() => {
@@ -599,6 +629,26 @@ const scanScript = `(() => {
 
 async function scanPage(page) {
   return page.evaluate(scanScript);
+}
+
+// Resolves true once any visible input/select/textarea exists, false on
+// timeout (e.g. a closed posting) — callers carry on either way. Polls with
+// page.evaluate rather than page.waitForFunction: Ashby's Content Security
+// Policy forbids 'unsafe-eval', which string predicates passed to
+// waitForFunction need, so that call throws on every Ashby page.
+const hasVisibleFieldScript = `[...document.querySelectorAll('input, select, textarea')].some((el) => {
+  if (el.type === 'hidden') return false;
+  const s = window.getComputedStyle(el);
+  return s.display !== 'none' && s.visibility !== 'hidden';
+})`;
+
+async function waitForFormFields(page, timeoutMs = FORM_RENDER_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await page.evaluate(hasVisibleFieldScript).catch(() => false)) return true;
+    await page.waitForTimeout(250);
+  }
+  return false;
 }
 
 async function expandSections(page, profile, log) {
@@ -1161,23 +1211,21 @@ async function main() {
 
     if (await stopIfBlocked('initial load')) return;
 
+    if (await waitForFormFields(page)) {
+      console.error('✓ form rendered');
+    } else {
+      console.error(
+        `⚠ no form fields appeared within ${FORM_RENDER_TIMEOUT_MS / 1000}s — scanning anyway`
+      );
+    }
+
     // --- job metadata ---
     const meta = await page.evaluate(`(() => ({
       title: document.title || '',
       h1: (document.querySelector('h1') || {}).textContent || '',
       body: (document.body.innerText || '').slice(0, 8000),
     }))()`);
-    role = meta.h1.trim();
-    // Lever's h1 often duplicates the full "<company> - <role>" title rather than
-    // giving just the role, so fall back to splitting the title in that case.
-    const titleParts = meta.title
-      .split(/[-|–]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!role || role === meta.title.trim()) {
-      role = titleParts.length > 1 ? titleParts.slice(1).join(' - ') : meta.title.trim();
-    }
-    company = titleParts.length > 1 ? titleParts[0] : null;
+    ({ role, company } = parseJobTitle(meta.title, meta.h1));
     language = detectLanguage({ title: role, description: meta.body });
     log.push(`role="${role}" company="${company}" language=${language}`);
     console.error(
