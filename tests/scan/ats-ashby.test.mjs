@@ -49,3 +49,16 @@ test('fetchAshby — posted_at vient de publishedAt, "" si absent', async () => 
   assert.equal(offers[0].posted_at, '2026-09-12T16:38:15.322Z');
   assert.equal(offers[1].posted_at, '');
 });
+
+test('fetchAshby — apply_url vient de applyUrl, "" si absent ; url reste jobUrl', async () => {
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  restore = installMockFetch({
+    'https://api.ashbyhq.com/posting-api/job-board/photoroom?includeCompensation=false': fixture,
+  });
+
+  const offers = await fetchAshby('photoroom', 'Photoroom');
+
+  assert.equal(offers[0].apply_url, 'https://jobs.ashbyhq.com/photoroom/job-photo-001/application');
+  assert.equal(offers[0].url, 'https://jobs.ashbyhq.com/photoroom/job-photo-001');
+  assert.equal(offers[1].apply_url, '');
+});

@@ -6,6 +6,15 @@
 // edit postings constantly, so `updated_at` makes months-old jobs look new
 // (on Stripe's board, 669/710 jobs had an updated_at on a different day
 // than first_published, checked 2026-09-29).
+//
+// `apply_url` is Greenhouse's hosted application form
+// (job-boards.greenhouse.io/embed/job_app?for=<slug>&token=<id>), not
+// `absolute_url`: for companies with their own careers site (Airbnb,
+// Stripe, …) `absolute_url` — and even job-boards.greenhouse.io/<slug>/jobs/<id>,
+// which redirects there — lands on a page that embeds the form in an
+// iframe. The hosted form works for every board and has the same field ids
+// as the regular Greenhouse job page (checked 2026-09-29). `url` stays
+// `absolute_url` (the dedupe key).
 
 import { normalizePostedAt } from '../../lib/posted-at.mjs';
 
@@ -37,6 +46,11 @@ export function stripHtml(html) {
 // filter has run is what caused an out-of-memory crash, and the description
 // text isn't used again until Phase 2 re-fetches it independently anyway
 // (fetchOfferBody) — so fetching it here was pure waste for that path.
+export function greenhouseApplyUrl(slug, jobId) {
+  const params = new URLSearchParams({ for: slug, token: String(jobId) });
+  return `https://job-boards.greenhouse.io/embed/job_app?${params}`;
+}
+
 export async function fetchGreenhouse(slug, companyName, { includeBody = true, signal } = {}) {
   const url = includeBody
     ? `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`
@@ -52,6 +66,7 @@ export async function fetchGreenhouse(slug, companyName, { includeBody = true, s
   const jobs = Array.isArray(data.jobs) ? data.jobs : [];
   return jobs.map((j) => ({
     url: j.absolute_url || '',
+    apply_url: j.id ? greenhouseApplyUrl(slug, j.id) : '',
     title: j.title || '',
     company: companyName,
     location: j.location?.name || '',

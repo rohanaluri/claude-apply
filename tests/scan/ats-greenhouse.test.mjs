@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installMockFetch } from '../helpers.mjs';
-import { fetchGreenhouse, stripHtml } from '../../src/scan/ats/greenhouse.mjs';
+import { fetchGreenhouse, greenhouseApplyUrl, stripHtml } from '../../src/scan/ats/greenhouse.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.join(__dirname, '..', 'fixtures', 'greenhouse-anthropic.json');
@@ -60,4 +60,26 @@ test('fetchGreenhouse — posted_at vient de first_published (pas updated_at), "
 
   assert.equal(offers[0].posted_at, '2026-09-03T17:30:34.000Z');
   assert.equal(offers[1].posted_at, '');
+});
+
+test('fetchGreenhouse — apply_url = formulaire hébergé Greenhouse (embed), url reste absolute_url', async () => {
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  restore = installMockFetch({
+    'https://boards-api.greenhouse.io/v1/boards/anthropic/jobs?content=true': fixture,
+  });
+
+  const offers = await fetchGreenhouse('anthropic', 'Anthropic');
+
+  assert.equal(
+    offers[0].apply_url,
+    'https://job-boards.greenhouse.io/embed/job_app?for=anthropic&token=1001'
+  );
+  assert.equal(offers[0].url, fixture.jobs[0].absolute_url);
+});
+
+test('greenhouseApplyUrl — encode le slug', () => {
+  assert.equal(
+    greenhouseApplyUrl('a&b', 42),
+    'https://job-boards.greenhouse.io/embed/job_app?for=a%26b&token=42'
+  );
 });

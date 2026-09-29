@@ -1,6 +1,8 @@
 // Fetcher for Ashby-hosted job boards.
 // Endpoint: GET https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=false
-// `posted_at` comes from `publishedAt`.
+// `posted_at` comes from `publishedAt`. `apply_url` is Ashby's own
+// `applyUrl` (the job page + "/application", i.e. the form itself); `url`
+// stays `jobUrl` (the dedupe key).
 
 import { normalizePostedAt } from '../../lib/posted-at.mjs';
 
@@ -23,6 +25,7 @@ export async function fetchAshby(slug, companyName, { includeBody = true, signal
   const jobs = Array.isArray(data.jobs) ? data.jobs : [];
   return jobs.map((j) => ({
     url: j.jobUrl || '',
+    apply_url: j.applyUrl || '',
     title: j.title || '',
     company: companyName,
     location: j.location || '',

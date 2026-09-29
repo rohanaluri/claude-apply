@@ -124,9 +124,8 @@ repeating it.
     everywhere it's used); `applyUrl` is surfaced as a new `apply_url` field. `capply`
     (`src/apply/index.mjs`) also gained its own safety net —
     `normalizeApplyUrl()` appends `/apply` to any `jobs.lever.co` URL that's missing it,
-    for anyone still pasting an overview link by hand. Only Lever was touched;
-    Greenhouse and Ashby aren't implemented in this pipeline yet, so their apply-link
-    shape hasn't been checked.
+    for anyone still pasting an overview link by hand. Greenhouse and Ashby got their
+    own `apply_url` on 2026-09-29 (Decision #42).
 29. **Phase 2 (LLM scoring) and the top-10 Layer 2 cutoff are both dropped from the
     daily path (2026-09-18).** `src/scan/index.mjs` no longer ranks Layer 1 survivors by
     CV-embedding similarity or truncates to `MAX_OFFERS_TO_SCORE` — every offer that
@@ -296,6 +295,20 @@ repeating it.
     unused `digest_min_score` profile field. None of this touched the AI calls that
     remain (`capply`'s free-text answers and `/score` both use `claude -p`). Everything
     is recoverable from git history.
+42. **`apply_url` for Greenhouse and Ashby (2026-09-29).** The first real Routine run
+    left `apply_url` — and therefore the sheet's `capply_command` — blank for every
+    non-Lever row, because only `fetchLever` set it (#28). Ashby's API already returns
+    `applyUrl` (the job page + `/application`), now passed through. Greenhouse has no
+    such field, and `absolute_url` often points to the company's own careers site
+    (e.g. `careers.airbnb.com`), where the form is inside an iframe;
+    `job-boards.greenhouse.io/<slug>/jobs/<id>` redirects there too for those
+    companies. `apply_url` is therefore Greenhouse's hosted form,
+    `job-boards.greenhouse.io/embed/job_app?for=<slug>&token=<id>` — it loads for
+    every board and has exactly the same field ids as the regular Greenhouse job page
+    `capply` was tested on. `url` is unchanged on both (still the dedupe key).
+    Verified: all 78 selected jobs in a live scan had an `apply_url`, and all 78 links
+    loaded. **Not yet verified:** a real `capply` run on the embed URL and on an Ashby
+    `/application` page.
 
 ---
 
@@ -998,6 +1011,8 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       through `chooseOption()` at all.)
 - [ ] **Cover-letter generation isn't wired into `index.mjs`.** `renderLatex()` exists and
       is real, but `cover_letter_*` fields currently route to manual review.
+- [ ] **Run `capply` once on a Greenhouse `embed/job_app` URL and once on an Ashby
+      `/application` URL** (Decision #42) — both are new apply-link shapes.
 - [ ] **Phase 4 tested live on two ATSes only:** Lever (PointClickCare, Epoch AI) and,
       since 2026-09-19, Greenhouse (Anthropic). Ashby apply is unverified, and each
       platform has only one or two real forms behind it.
