@@ -128,7 +128,15 @@ const RULES = [
         f.name
       ),
   },
-  { key: 'sponsorship', when: (f) => test_norm(/sponsor|visa/, f.label, f.name) },
+  // A follow-up like "If so, please describe your current visa status" is a
+  // free-text detail box, not the sponsorship question itself — filling the
+  // Yes/No answer into it was seen live on Ashby (2026-09-29).
+  {
+    key: 'sponsorship',
+    when: (f) =>
+      test_norm(/sponsor|visa/, f.label, f.name) &&
+      !test_norm(/describe|explain|details/, f.label, ''),
+  },
   {
     key: 'experience_company',
     when: (f) =>
@@ -201,7 +209,15 @@ const RULES = [
   { key: 'eeo_gender', when: (f) => test_norm(/gender/, f.label, f.name) },
   { key: 'eeo_ethnicity', when: (f) => test_norm(/ethnicity|race/, f.label, f.name) },
   { key: 'eeo_veteran', when: (f) => test_norm(/veteran/, f.label, f.name) },
-  { key: 'eeo_disability', when: (f) => test_norm(/disability|handicap/, f.label, f.name) },
+  // Interview-accommodation questions ("Would you like any disability or
+  // mobility assistance for your interviews?") mention disability but are not
+  // the EEO self-identification question (seen live on Ashby, 2026-09-29).
+  {
+    key: 'eeo_disability',
+    when: (f) =>
+      test_norm(/disability|handicap/, f.label, f.name) &&
+      !test_norm(/assistance|accommodat|accessib|mobility/, f.label, ''),
+  },
   // Added 2026-08-27: catches both a plain residential "Country" address field
   // and application-specific phrasing like "Which country do you intend to
   // primarily work from?" — the profile has one country field, and both
@@ -272,7 +288,11 @@ export function mapProfileValue(classKey, profile, opts = {}) {
     // profile value" review) if work_authorized was never set, same
     // conservative behavior as everywhere else rather than guessing.
     work_auth:
-      profile.work_authorized === true ? 'Yes' : profile.work_authorized === false ? 'No' : undefined,
+      profile.work_authorized === true
+        ? 'Yes'
+        : profile.work_authorized === false
+          ? 'No'
+          : undefined,
     sponsorship: profile.requires_sponsorship ? 'Yes' : 'No',
     availability: profile.availability_start,
     eeo_gender: profile.gender ?? 'Prefer not to say',

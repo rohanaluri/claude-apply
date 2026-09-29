@@ -594,10 +594,20 @@ const scanScript = `(() => {
     return ((q ? q.textContent : c.textContent) || '').replace(/\\s+/g, ' ').trim().slice(0, 300);
   };
 
+  // Ashby Yes/No questions are two <button data-option="yes|no"> next to a
+  // hidden checkbox, so the input loop below never sees them.
+  const isAshbyYesNoInput = (el) =>
+    !!(el.parentElement && el.parentElement.querySelector(':scope > button[data-option="yes"]'));
+
   const out = [];
   let i = 0;
   for (const el of document.querySelectorAll('input, select, textarea')) {
     if (el.type === 'hidden') continue;
+    // Ashby's "Autofill from resume" box is a second file input that makes
+    // Ashby parse the resume and overwrite fields; only the real Resume
+    // field should get the upload.
+    if (el.closest('[class*="ashby-application-form-autofill"]')) continue;
+    if (isAshbyYesNoInput(el)) continue;
     const style = window.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') continue;
 
@@ -623,6 +633,28 @@ const scanScript = `(() => {
       maxLength: el.maxLength > 0 ? el.maxLength : null,
     });
     i++;
+  }
+
+  // Emit each Ashby Yes/No question as a two-option radio group, so it goes
+  // through the normal radio path (classify by question text → choose →
+  // fillRadio clicks the button).
+  for (const entry of document.querySelectorAll('[data-field-path]')) {
+    const yes = entry.querySelector('button[data-option="yes"]');
+    const no = entry.querySelector('button[data-option="no"]');
+    if (!yes || !no) continue;
+    const labelEl = entry.querySelector('label');
+    const question = ((labelEl && labelEl.textContent) || '').replace(/\\s+/g, ' ').trim().slice(0, 300);
+    const required = !!(labelEl && /_required/.test(labelEl.className || ''));
+    const name = 'ashby-yesno:' + entry.getAttribute('data-field-path');
+    for (const [btn, optionLabel] of [[yes, 'Yes'], [no, 'No']]) {
+      btn.setAttribute('data-ca-idx', String(i));
+      out.push({
+        idx: i, tag: 'button', type: 'radio', name, id: '', placeholder: '', required,
+        label: optionLabel, optionLabel, questionText: question,
+        selectOptions: [], isReactSelect: false, maxLength: null,
+      });
+      i++;
+    }
   }
   return out;
 })()`;
@@ -792,12 +824,27 @@ async function fillRadio(page, field, choiceLabel) {
   const pos = field.options.findIndex((o) => o === choiceLabel);
   if (pos < 0) return false;
   const targetIdx = field.optionIdx[pos];
-  return page.evaluate((idx) => {
+  const isSelected = (idx) =>
+    page.evaluate((i) => {
+      const el = document.querySelector(`[data-ca-idx="${i}"]`);
+      return (
+        !!el &&
+        (el.checked === true ||
+          el.getAttribute('aria-checked') === 'true' ||
+          el.getAttribute('aria-pressed') === 'true')
+      );
+    }, idx);
+  const clicked = await page.evaluate((idx) => {
     const el = document.querySelector(`[data-ca-idx="${idx}"]`);
     if (!el) return false;
     el.click();
-    return el.checked === true || el.getAttribute('aria-checked') === 'true';
+    return true;
   }, targetIdx);
+  if (!clicked) return false;
+  if (await isSelected(targetIdx)) return true;
+  // Ashby's Yes/No buttons (React) update aria-pressed on the next render.
+  await page.waitForTimeout(200);
+  return isSelected(targetIdx);
 }
 
 /**

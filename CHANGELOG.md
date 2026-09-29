@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `capply` on Ashby: Yes/No button questions are now detected and answered (from the profile, or via the AI multiple-choice step), the "Autofill from resume" upload is skipped, and visa-status follow-ups / interview-accommodation questions are no longer misclassified as `sponsorship` / `eeo_disability`.
 - `capply` now waits (up to 15s) for a client-rendered form before scanning, which fixes Ashby pages scanning as 0 fields and being detected as French; it also parses Ashby (`<role> @ <company>`) and Greenhouse embed-form (`Job Application for <role> at <company>`) page titles.
 - Greenhouse and Ashby offers now carry `apply_url` (previously Lever only), so the Jobs tab's `apply_url` and `capply_command` columns are filled for every platform: Ashby's own `applyUrl`, and Greenhouse's hosted form `job-boards.greenhouse.io/embed/job_app?for=<slug>&token=<id>`, which works even for companies whose `absolute_url` points to their own careers site.
 - Removed dead code: the unused CV-embedding ranker (`src/lib/embed-ranker.mjs`, the `models/` directory and the `@xenova/transformers` dependency), the never-wired `maxBoardsPerRun` aggregator option, the `readJobsUrls()` wrapper (use `readJobsTab()`), and the unused `digest_min_score` profile field.

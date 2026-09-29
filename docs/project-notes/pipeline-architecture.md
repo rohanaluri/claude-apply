@@ -325,6 +325,31 @@ repeating it.
     from 0 fields to 12 planned (name, email, LinkedIn, resume, sponsorship filled;
     pronouns/location to review), with correct company/role/language; Greenhouse and
     Lever unchanged (~2.5s each).
+44. **Ashby form handling in `capply` (2026-09-29).** The first real Ashby run (after
+    #43) filled 7 fields but had four Ashby-specific problems, all fixed:
+    - **Yes/No questions were invisible.** Ashby renders them as two
+      `<button data-option="yes|no">` next to a hidden checkbox, so the input scan
+      skipped them — required questions (relocation, sponsorship) were neither filled
+      nor flagged. The scan now emits each one as a two-option radio group (name
+      `ashby-yesno:<data-field-path>`, question from the field's `<label>`), so it goes
+      through the normal radio path: a recognized question (sponsorship, work_auth) is
+      answered from the profile, an unrecognized one goes to the existing `ai-choice`
+      path with the real Yes/No options. `fillRadio()` now also accepts
+      `aria-pressed="true"` and re-checks once after 200ms (React re-render).
+    - **The resume was uploaded twice** — once into Ashby's "Autofill from resume" box,
+      which makes Ashby parse the resume and overwrite fields. File inputs inside
+      `[class*="ashby-application-form-autofill"]` are now skipped.
+    - **"If so, please describe your current visa status" was classified
+      `sponsorship`** and got "No". The sponsorship rule now excludes
+      describe/explain/details follow-ups (it still matches OpenAI's "…require
+      sponsorship for employment visa status (e.g., H-1B)…").
+    - **"Would you like any disability or mobility assistance for your interviews?" was
+      classified `eeo_disability`.** That rule now excludes
+      assistance/accommodation/accessibility/mobility wording.
+    Both text follow-ups now go to the AI free-text step (grounded, may decline).
+    Verified with `capply --dry-run` on four live Ashby forms (Browserbase, Ramp,
+    OpenAI, Notion) and by clicking a live Yes/No button (`aria-pressed` flips on the
+    next check); Greenhouse and Lever plans are identical to before.
 
 ---
 
@@ -1028,9 +1053,10 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
 - [ ] **Cover-letter generation isn't wired into `index.mjs`.** `renderLatex()` exists and
       is real, but `cover_letter_*` fields currently route to manual review.
 - [ ] **Run `capply` for real on an Ashby `/application` URL** (Decisions #42, #43).
-      Greenhouse's embed URL is confirmed working live; Ashby is verified only with
-      `--dry-run` so far. Ashby's Yes/No questions render as buttons, and its location
-      field is an autocomplete — watch those two.
+      Greenhouse's embed URL is confirmed working live; Ashby filled 7/12 fields live
+      before #44, and #44 is verified with `--dry-run` only. Still manual on Ashby: the
+      "Where are you currently based?" location autocomplete (no label detected) and
+      pronoun checkboxes.
 - [ ] **Phase 4 tested live on two ATSes only:** Lever (PointClickCare, Epoch AI) and,
       since 2026-09-19, Greenhouse (Anthropic). Ashby apply is unverified, and each
       platform has only one or two real forms behind it.
