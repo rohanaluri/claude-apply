@@ -10,49 +10,23 @@
 // documented JSON API meant for board embedding — the same one we already use
 // per company.
 //
-// Board list source: known-greenhouse-boards.json, expanded 2026-09-20 from
-// a ~20-company hand-curated list to a one-time import of
-// Feashliaa/job-board-aggregator's data/greenhouse_companies.json (8,333
-// slugs, harvested from Common Crawl — same source/method as
-// known-lever-boards.json's import, see that repo's README). Static
-// snapshot, not a live sync. Per that repo's README, the curated `data/`
-// datasets are licensed CC BY-NC 4.0 (non-commercial use, attribution
-// required) — fine for this personal job-search tool, not for
-// redistribution or commercial use.
+// Board list source: known-greenhouse-boards.json — 172 companies, in rank
+// order: a curated top-250 Greenhouse list (2026-09-29) minus the slugs whose
+// board returned HTTP 404 (the company has left Greenhouse). Trimmed down from a
+// full 8,333-slug Common Crawl import (Feashliaa/job-board-aggregator, CC
+// BY-NC 4.0) that was producing thousands of offers per day. The full list
+// is recoverable from git history if the list needs to grow again.
 //
-// Timeout + shuffle + progress-logging added 2026-09-20 alongside the list
-// expansion, mirroring aggregators/lever.mjs: at 8,333 boards this module
-// carries the same risk documented there — fetchGreenhouse() has no
-// built-in timeout, so one hung request would permanently occupy one of
-// only 6 concurrency slots and stall the whole run. Was safe to omit at the
-// old 20-board scale; is not at this one.
+// Each board is fetched through fetchBoard() (./fetch-board.mjs): per-board
+// timeout with real cancellation, plus one retry — see that file for why.
 
 import { fetchGreenhouse } from '../ats/greenhouse.mjs';
+import { fetchBoard, BOARD_FETCH_TIMEOUT_MS, BOARD_FETCH_ATTEMPTS } from './fetch-board.mjs';
 import { pLimit } from '../../lib/p-limit.mjs';
 import { checkTitle } from '../../lib/prefilter-rules.mjs';
 import knownBoards from './known-greenhouse-boards.json' with { type: 'json' };
 
 const FETCH_CONCURRENCY = 6;
-
-// Does NOT cancel the underlying HTTP request (fetchGreenhouse takes no
-// AbortSignal) — it just stops waiting on it so the aggregator can move on.
-const BOARD_FETCH_TIMEOUT_MS = 10_000;
-
-function withTimeout(promise, ms, label) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`timed out after ${ms}ms: ${label}`)), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
 
 // Fisher-Yates shuffle, returns a new array (does not mutate input).
 // Used so the daily scan doesn't always hit the same alphabetically-early
@@ -83,25 +57,20 @@ export async function fetchAggregator({
   locations = [],
   limit = Infinity,
   boards = knownBoards,
-  maxBoardsPerRun = Infinity,
   onProgress = null,
   titleFilter = null,
 } = {}) {
   const titleRe = compileWordRegex(keywords);
   const locationRe = compileSubstringRegex(locations);
 
-  const shuffled = shuffle(boards.filter((b) => b && typeof b.slug === 'string'));
-  const validBoards =
-    Number.isFinite(maxBoardsPerRun) && maxBoardsPerRun < shuffled.length
-      ? shuffled.slice(0, maxBoardsPerRun)
-      : shuffled;
+  const validBoards = shuffle(boards.filter((b) => b && typeof b.slug === 'string'));
   const concurrency = pLimit(FETCH_CONCURRENCY);
 
   let completed = 0;
   const PROGRESS_EVERY = 100;
   const startedAt = Date.now();
   process.stderr.write(
-    `[greenhouse aggregator] scanning ${validBoards.length}/${shuffled.length} boards (concurrency ${FETCH_CONCURRENCY}, ${BOARD_FETCH_TIMEOUT_MS}ms/board timeout)...\n`
+    `[greenhouse aggregator] scanning ${validBoards.length} boards (concurrency ${FETCH_CONCURRENCY}, ${BOARD_FETCH_TIMEOUT_MS}ms/board timeout, ${BOARD_FETCH_ATTEMPTS} attempts)...\n`
   );
 
   // Filtering happens INSIDE each board's own callback, immediately after
@@ -122,11 +91,10 @@ export async function fetchAggregator({
       concurrency(async () => {
         const company = board.company || board.slug;
         try {
-          const raw = await withTimeout(
-            fetchGreenhouse(board.slug, company, { includeBody: false }),
-            BOARD_FETCH_TIMEOUT_MS,
-            board.slug
-          );
+          const raw = await fetchBoard(fetchGreenhouse, board, {
+            onRetry: (b, err) =>
+              process.stderr.write(`[greenhouse aggregator] retrying ${b.slug} (${err.message})\n`),
+          });
           for (const o of raw) {
             const tagged = { ...o, source: 'aggregator:greenhouse' };
             if (titleRe && !titleRe.test(tagged.title || '')) continue;

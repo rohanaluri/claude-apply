@@ -75,3 +75,15 @@ test('fetchLever — array vide si API retourne []', async () => {
   const offers = await fetchLever('empty-co', 'EmptyCo');
   assert.deepEqual(offers, []);
 });
+
+test('fetchLever — posted_at vient de createdAt (epoch ms), "" si absent', async () => {
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  restore = installMockFetch({
+    'https://api.lever.co/v0/postings/mistral?mode=json': fixture,
+  });
+
+  const offers = await fetchLever('mistral', 'Mistral AI');
+
+  assert.equal(offers[0].posted_at, '2026-08-11T17:40:00.000Z');
+  assert.equal(offers[1].posted_at, '');
+});

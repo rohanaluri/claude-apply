@@ -1,6 +1,13 @@
 // Fetcher for Greenhouse-hosted job boards.
 // Endpoint: GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true
 // Returns Offer[] conforming to the Offer contract.
+//
+// `posted_at` comes from `first_published`, NOT `updated_at`: recruiters
+// edit postings constantly, so `updated_at` makes months-old jobs look new
+// (on Stripe's board, 669/710 jobs had an updated_at on a different day
+// than first_published, checked 2026-09-29).
+
+import { normalizePostedAt } from '../../lib/posted-at.mjs';
 
 const HTML_ENTITIES = {
   '&amp;': '&',
@@ -30,12 +37,13 @@ export function stripHtml(html) {
 // filter has run is what caused an out-of-memory crash, and the description
 // text isn't used again until Phase 2 re-fetches it independently anyway
 // (fetchOfferBody) — so fetching it here was pure waste for that path.
-export async function fetchGreenhouse(slug, companyName, { includeBody = true } = {}) {
+export async function fetchGreenhouse(slug, companyName, { includeBody = true, signal } = {}) {
   const url = includeBody
     ? `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`
     : `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`;
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'claude-apply-scan/1.0' },
+    signal,
   });
   if (!res.ok) {
     throw new Error(`Greenhouse API ${slug}: HTTP ${res.status}`);
@@ -48,6 +56,7 @@ export async function fetchGreenhouse(slug, companyName, { includeBody = true } 
     company: companyName,
     location: j.location?.name || '',
     body: includeBody ? stripHtml(j.content || '') : '',
+    posted_at: normalizePostedAt(j.first_published),
     platform: 'greenhouse',
   }));
 }

@@ -10,6 +10,12 @@
 // anything that needs the form directly (the Jobs tab, capply). Falls back
 // to '' if Lever ever omits it, rather than guessing at hostedUrl + '/apply'
 // here — src/apply/index.mjs has its own safety net for that.
+//
+// `posted_at` comes from `createdAt` (epoch ms); Lever exposes no
+// updated-at field on this endpoint.
+
+import { normalizePostedAt } from '../../lib/posted-at.mjs';
+
 // `includeBody` (default true, unchanged for every existing caller): Lever's
 // API always sends descriptionPlain regardless of any request param (no
 // server-side toggle like Greenhouse's ?content=true), so this can't reduce
@@ -17,10 +23,11 @@
 // the text from the returned offer object, so it isn't retained across a
 // long-running scan. Added 2026-09-20 for the aggregators, same reasoning
 // as fetchGreenhouse's includeBody.
-export async function fetchLever(slug, companyName, { includeBody = true } = {}) {
+export async function fetchLever(slug, companyName, { includeBody = true, signal } = {}) {
   const url = `https://api.lever.co/v0/postings/${slug}?mode=json`;
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'claude-apply-scan/1.0' },
+    signal,
   });
   if (!res.ok) {
     throw new Error(`Lever API ${slug}: HTTP ${res.status}`);
@@ -36,6 +43,7 @@ export async function fetchLever(slug, companyName, { includeBody = true } = {})
     company: companyName,
     location: p.categories?.location || '',
     body: includeBody ? p.descriptionPlain || '' : '',
+    posted_at: normalizePostedAt(p.createdAt),
     platform: 'lever',
   }));
 }

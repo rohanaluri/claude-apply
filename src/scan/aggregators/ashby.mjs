@@ -5,49 +5,23 @@
 // company to be declared in portals.yml. Uses the same public API
 // (`api.ashbyhq.com`) already used by ats/ashby.mjs for tracked_companies.
 //
-// Board list source: known-ashby-boards.json, a one-time import of
-// Feashliaa/job-board-aggregator's data/ashby_companies.json (3,161 slugs,
-// harvested from Common Crawl — see that repo's README). Same source and
-// method as known-lever-boards.json's import. This is a static snapshot,
-// not a live sync: new Ashby companies that started after that crawl won't
-// appear here until the list is refreshed by hand. Per that repo's README,
-// the curated `data/` datasets are licensed CC BY-NC 4.0 (non-commercial
-// use, attribution required) — fine for this personal job-search tool, not
-// for redistribution or commercial use.
+// Board list source: known-ashby-boards.json — 211 companies, in rank
+// order: a curated top-250 Ashby list (2026-09-29) minus the slugs whose
+// board returned HTTP 404 (the company has left Ashby). Trimmed down from a
+// full 3,161-slug Common Crawl import (Feashliaa/job-board-aggregator, CC
+// BY-NC 4.0) that was producing thousands of offers per day. The full list
+// is recoverable from git history if the list needs to grow again.
 //
-// Modeled on aggregators/lever.mjs rather than aggregators/greenhouse.mjs:
-// at 3,161 boards this is much closer to Lever's scale than to Greenhouse's
-// old 20-board list, so it carries the same per-board timeout and
-// shuffle/progress-logging protection Lever needed at scale.
+// Each board is fetched through fetchBoard() (./fetch-board.mjs): per-board
+// timeout with real cancellation, plus one retry — see that file for why.
 
 import { fetchAshby } from '../ats/ashby.mjs';
+import { fetchBoard, BOARD_FETCH_TIMEOUT_MS, BOARD_FETCH_ATTEMPTS } from './fetch-board.mjs';
 import { pLimit } from '../../lib/p-limit.mjs';
 import { checkTitle } from '../../lib/prefilter-rules.mjs';
 import knownBoards from './known-ashby-boards.json' with { type: 'json' };
 
 const FETCH_CONCURRENCY = 6;
-
-// Same rationale as lever.mjs: fetchAshby() has no built-in timeout, and one
-// hung request would permanently occupy one of only 6 concurrency slots and
-// stall the whole run. Does NOT cancel the underlying HTTP request — just
-// stops waiting on it so the aggregator can move on to the next board.
-const BOARD_FETCH_TIMEOUT_MS = 10_000;
-
-function withTimeout(promise, ms, label) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`timed out after ${ms}ms: ${label}`)), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
 
 function compileWordRegex(terms) {
   if (!Array.isArray(terms) || terms.length === 0) return null;
@@ -78,25 +52,20 @@ export async function fetchAggregator({
   locations = [],
   limit = Infinity,
   boards = knownBoards,
-  maxBoardsPerRun = Infinity,
   onProgress = null,
   titleFilter = null,
 } = {}) {
   const titleRe = compileWordRegex(keywords);
   const locationRe = compileSubstringRegex(locations);
 
-  const shuffled = shuffle(boards.filter((b) => b && typeof b.slug === 'string'));
-  const validBoards =
-    Number.isFinite(maxBoardsPerRun) && maxBoardsPerRun < shuffled.length
-      ? shuffled.slice(0, maxBoardsPerRun)
-      : shuffled;
+  const validBoards = shuffle(boards.filter((b) => b && typeof b.slug === 'string'));
   const concurrency = pLimit(FETCH_CONCURRENCY);
 
   let completed = 0;
   const PROGRESS_EVERY = 100;
   const startedAt = Date.now();
   process.stderr.write(
-    `[ashby aggregator] scanning ${validBoards.length}/${shuffled.length} boards (concurrency ${FETCH_CONCURRENCY}, ${BOARD_FETCH_TIMEOUT_MS}ms/board timeout)...\n`
+    `[ashby aggregator] scanning ${validBoards.length} boards (concurrency ${FETCH_CONCURRENCY}, ${BOARD_FETCH_TIMEOUT_MS}ms/board timeout, ${BOARD_FETCH_ATTEMPTS} attempts)...\n`
   );
 
   // Filtering happens INSIDE each board's own callback, immediately after
@@ -116,11 +85,10 @@ export async function fetchAggregator({
       concurrency(async () => {
         const company = board.company || board.slug;
         try {
-          const raw = await withTimeout(
-            fetchAshby(board.slug, company, { includeBody: false }),
-            BOARD_FETCH_TIMEOUT_MS,
-            board.slug
-          );
+          const raw = await fetchBoard(fetchAshby, board, {
+            onRetry: (b, err) =>
+              process.stderr.write(`[ashby aggregator] retrying ${b.slug} (${err.message})\n`),
+          });
           for (const o of raw) {
             const tagged = { ...o, source: 'aggregator:ashby' };
             if (titleRe && !titleRe.test(tagged.title || '')) continue;

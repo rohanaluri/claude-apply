@@ -93,6 +93,29 @@ title_filter:
     - Agent
     - Polygraph
     - SCI
+    # Added 2026-09-29 from a 834-title dry run over the curated top-250
+    # boards: cleared/defense roles, data-center/facilities ops, above-new-grad
+    # levels, non-full-time and non-engineering roles that still contained
+    # "Data"/"Engineer"/"Analytics".
+    - Clearance
+    - Secret
+    - Data Center
+    - Facilities
+    - Construction
+    - Supervisor
+    - Administrator
+    - Specialist
+    - Distinguished
+    - III
+    - IV
+    - PhD
+    - Student
+    - Contractor
+    - Consultant
+    - Representative
+    - Operator
+    - Steward
+    - Electronics
 
   # Domain filter layered on top of positive/negative (2026-09-19): the
   # title must also contain one of these, so a title that only matches
@@ -109,31 +132,23 @@ title_filter:
   required_any_in: [title]
 
 aggregators:
-  # Greenhouse aggregator: board list expanded 2026-09-20 from a ~20-company
-  # hand-curated list to 8,333 boards, imported the same way as the Lever
-  # list below (Feashliaa/job-board-aggregator, Common Crawl-harvested,
-  # CC BY-NC 4.0). Scans ALL boards every run (no maxBoardsPerRun cap) —
-  # Phase 1 is $0 AI cost, so there's no reason to skip boards.
+  # Each aggregator scans its bundled board list in
+  # src/scan/aggregators/known-{greenhouse,lever,ashby}-boards.json — the
+  # curated top-250 companies per platform (2026-09-29), minus companies
+  # whose board no longer exists — 464 boards total (172 Greenhouse, 81
+  # Lever, 211 Ashby), trimmed down from ~15,800 Common Crawl-harvested
+  # boards that were producing thousands of offers per day. Add a `boards:` list here to override one aggregator's
+  # list without touching the bundled file.
   greenhouse:
     enabled: true
     keywords: []
     locations: []
 
-  # Lever aggregator: scans ALL 4,368 boards every run (no maxBoardsPerRun
-  # cap). Phase 1 is $0 AI cost, so there's no reason to skip boards.
-  # The cascade filter (Layer 1 regex + Layer 2 embedding similarity)
-  # narrows the results down to the top 10 before any Claude tokens are
-  # spent in Phase 2.
   lever:
     enabled: true
     keywords: []
     locations: []
 
-  # Ashby aggregator: new 2026-09-20. Board list is known-ashby-boards.json,
-  # a one-time import of Feashliaa/job-board-aggregator's ashby_companies.json
-  # (3,161 slugs, same source/method/license as the Lever and expanded
-  # Greenhouse lists above). Scans ALL boards every run (no maxBoardsPerRun
-  # cap) for the same $0-AI-cost reason.
   ashby:
     enabled: true
     keywords: []

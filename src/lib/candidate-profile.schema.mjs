@@ -1,3 +1,5 @@
+import { resolveDigestLimits } from '../digest/select-jobs.mjs';
+
 export const REQUIRED_FIELDS = [
   'first_name',
   'last_name',
@@ -40,13 +42,14 @@ const OPTIONAL_FIELDS = [
   'auto_generate_cover_letter',
   'digest_sheet_id',
   'digest_sheet_name',
-  'digest_min_score',
   // Added 2026-09-18: the Jobs tab lives in the same spreadsheet as
   // digest_sheet_id, just a different tab. jobs_sheet_gid is optional —
   // only needed to make the digest email's "Open the Jobs tab" link land
   // on that exact tab instead of the spreadsheet's default view.
   'jobs_sheet_name',
   'jobs_sheet_gid',
+  // Freshness window + per-company caps for the digest (Decision #38).
+  'digest_limits',
   'target_locations',
   // Application-preference fields (2026-08-27) — grounding for Phase 4's
   // AI-answered dropdown/radio path (unrecognized questions with real
@@ -122,6 +125,13 @@ export function validateProfile(profile) {
   ) {
     errors.push('auto_apply_min_score must be a number between 0 and 10');
   }
+  if (profile.digest_limits !== undefined && profile.digest_limits !== null) {
+    try {
+      resolveDigestLimits(profile.digest_limits);
+    } catch (err) {
+      errors.push(err.message);
+    }
+  }
   if (profile.education !== undefined) {
     if (!Array.isArray(profile.education)) {
       errors.push('education must be an array');
@@ -170,10 +180,7 @@ export function validateProfile(profile) {
       errors.push('share_info_consent must be a boolean (true/false)');
     }
   }
-  if (
-    profile.preferred_hours_per_week !== undefined &&
-    profile.preferred_hours_per_week !== null
-  ) {
+  if (profile.preferred_hours_per_week !== undefined && profile.preferred_hours_per_week !== null) {
     if (
       typeof profile.preferred_hours_per_week !== 'number' ||
       profile.preferred_hours_per_week <= 0 ||
@@ -206,7 +213,10 @@ export function validateProfile(profile) {
     }
   }
   if (profile.salary_expectation !== undefined && profile.salary_expectation !== null) {
-    if (typeof profile.salary_expectation !== 'string' || profile.salary_expectation.trim() === '') {
+    if (
+      typeof profile.salary_expectation !== 'string' ||
+      profile.salary_expectation.trim() === ''
+    ) {
       errors.push('salary_expectation must be a non-empty string');
     }
   }

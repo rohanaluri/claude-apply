@@ -25,8 +25,8 @@ const BOARDS = [
   { slug: 'board-b', company: 'Board B Co' },
 ];
 
-const URL_A = 'https://boards-api.greenhouse.io/v1/boards/board-a/jobs?content=true';
-const URL_B = 'https://boards-api.greenhouse.io/v1/boards/board-b/jobs?content=true';
+const URL_A = 'https://boards-api.greenhouse.io/v1/boards/board-a/jobs';
+const URL_B = 'https://boards-api.greenhouse.io/v1/boards/board-b/jobs';
 
 let restore;
 afterEach(() => {

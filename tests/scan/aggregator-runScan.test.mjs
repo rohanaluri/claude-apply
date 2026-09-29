@@ -21,8 +21,8 @@ const fixB = JSON.parse(
   )
 );
 
-const URL_A = 'https://boards-api.greenhouse.io/v1/boards/board-a/jobs?content=true';
-const URL_B = 'https://boards-api.greenhouse.io/v1/boards/board-b/jobs?content=true';
+const URL_A = 'https://boards-api.greenhouse.io/v1/boards/board-a/jobs';
+const URL_B = 'https://boards-api.greenhouse.io/v1/boards/board-b/jobs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-agg-'));
 let restore;
@@ -78,12 +78,11 @@ test('runScan source=aggregator — applique le prefilter et écrit pipeline.md'
     source: 'aggregator',
   });
 
-  // Title filter (Intern|Stage) keeps:
+  // Title filter (whole-word Intern|Stage) keeps only:
   //   - "Software Engineering Intern" / Paris
-  //   - "Research Internship" / London
   //   - "Stage Data Science" / Lyon
-  // Location filter (target France/Paris/Remote) rejects "Research Internship" (London).
-  // Final added: 2.
+  // "Research Internship" is rejected ("Intern" doesn't whole-word match
+  // "Internship"), as are "Senior Backend Engineer" and "Marketing Manager".
   assert.equal(result.added.length, 2);
   const titles = result.added.map((o) => o.title).sort();
   assert.deepEqual(titles, ['Software Engineering Intern', 'Stage Data Science']);
@@ -98,10 +97,12 @@ test('runScan source=aggregator — applique le prefilter et écrit pipeline.md'
   const aggEntry = result.perCompany.find((c) => c.platform === 'aggregator:greenhouse');
   assert.ok(aggEntry, 'aggregator entry missing in perCompany');
 
-  // Title-rejected ("Senior Backend Engineer", "Marketing Manager") + location-rejected
-  // ("Research Internship" / London) are recorded in filtered-out.tsv.
-  const filt = fs.readFileSync(p.filteredPath, 'utf8');
-  assert.ok(filt.includes('Senior Backend Engineer') || filt.includes('Marketing Manager'));
+  // The aggregator applies title_filter itself, before runScan sees any
+  // offers, so title-rejected aggregator offers never reach filtered-out.tsv.
+  assert.ok(!md.includes('Senior Backend Engineer'));
+  assert.ok(!md.includes('Marketing Manager'));
+  assert.ok(!md.includes('Research Internship'));
+  assert.equal(fs.existsSync(p.filteredPath), false);
 });
 
 test('runScan source=aggregator — dédup via scan-history.tsv au second run', async () => {

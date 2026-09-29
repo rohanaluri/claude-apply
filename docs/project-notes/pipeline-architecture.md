@@ -4,6 +4,25 @@ Base repo: https://github.com/LeoLaborie/claude-apply (forked to `rohanaluri/cla
 Orchestration: Claude Code Routines (cloud, Anthropic-managed) for Phases 1-3
 Local execution environment: WSL2 (Ubuntu) on a Windows host
 Notification: Google Sheets (Sheets API write) → Zapier (New Spreadsheet Row trigger) → Gmail
+Last reviewed: 2026-09-29
+
+## At a glance (current daily path)
+
+1. **Scan** (cloud, $0 AI) — `node src/scan/index.mjs --source aggregator` checks 464
+   curated company boards (172 Greenhouse, 81 Lever, 211 Ashby — Decision #37), applies
+   the title/location/date prefilter, and hands every survivor, with its first-posted
+   date, to the digest via `data/todays-offers.json`.
+2. **Digest** (cloud, $0 AI) — `node src/digest/index.mjs` drops URLs already in the
+   Jobs tab (the only state that survives between runs — Decision #30), keeps jobs
+   posted in the last 14 days, sends at most 3 per company per day and 10 per company
+   per rolling 30 days, newest first (Decision #38), appends them to the Jobs tab, then
+   writes one Digest-tab row that Zapier turns into an email.
+3. **Apply** (local, you) — `capply "<url>"` fills the form in Chrome over CDP and stops
+   at Submit (Section 6).
+
+Phase 2 (LLM scoring) still exists in the repo but is **not** on the daily path
+(Decision #29). Measured 2026-09-29 against an empty Jobs tab: 706 prefilter
+survivors → **75 jobs on day one** (626 older than 14 days, 5 over a daily cap).
 
 ---
 
@@ -54,9 +73,12 @@ repeating it.
     be added to it explicitly, and it gates Phase 1 regardless of which phase actually
     needs the new field (see Section 7's inventory).
 22. `candidate-profile.yml` and `portals.yml` are force-committed despite the blanket
-    `.gitignore` rule, since neither holds real secrets yet; `cv.md` was force-committed
-    the same way on 2026-08-26 once we confirmed it also holds no real PII — only the
-    service-account key remains deliberately uncommitted (see Section 8).
+    `.gitignore` rule, since neither held real secrets at the time; `cv.md` was
+    force-committed the same way on 2026-08-26 while it was still a placeholder — only the
+    service-account key remains deliberately uncommitted (see Section 8). **Since
+    2026-09-03 `cv.md`, `cv.pdf` and `candidate-profile.yml` hold real personal data and
+    are still tracked** — the cloud Routine needs them in the checkout, but this
+    conflicts with the repo's "never commit personal data" invariant (see Open Items).
 23. Phase 2 fetches Lever job bodies via Lever's public API (plain `fetch()`), not
     Playwright — the cloud Routine's sandbox proxy blocks real browser navigation
     entirely (`net::ERR_TUNNEL_CONNECTION_FAILED`), a known Claude Code sandbox
@@ -109,10 +131,11 @@ repeating it.
     daily path (2026-09-18).** `src/scan/index.mjs` no longer ranks Layer 1 survivors by
     CV-embedding similarity or truncates to `MAX_OFFERS_TO_SCORE` — every offer that
     clears the regex/blacklist/location/date prefilter goes through. The Routine's
-    instructions (Section 8) no longer call `node src/score/index.mjs --batch`. Both
-    `src/score/` and `src/lib/embed-ranker.mjs` stay in the repo — nothing deleted, just
-    unused by the daily Routine — in case scoring is worth re-enabling once real volume
-    is observed without it.
+    instructions (Section 8) no longer call `node src/score/index.mjs --batch`.
+    `src/score/` stays in the repo, unused by the daily Routine, in case scoring is
+    worth re-enabling. The CV-embedding ranker (`src/lib/embed-ranker.mjs`, its
+    `models/` directory and `@xenova/transformers`) was kept at first too, then
+    deleted on 2026-09-29 (Decision #41).
 30. **Cross-day dedupe moved from `scan-history.tsv` to the Jobs tab's `url` column
     (2026-09-18).** The cloud Routine does a fresh checkout every run — `data/` never
     survives between days — so `scan-history.tsv`-based dedupe only ever worked
@@ -146,7 +169,7 @@ repeating it.
     aggregator`, which skips `tracked_companies` entirely (`wantsAts` is only true for
     `ats`/`all`) and instead queries two company-agnostic aggregators configured in
     `portals.yml`'s `aggregators:` block: a Greenhouse aggregator (~20 curated public
-    boards) and a Lever aggregator (`src/scan/aggregators/known-lever-boards.json`,
+    boards at the time; see #37 for the current lists) and a Lever aggregator (`src/scan/aggregators/known-lever-boards.json`,
     4,368 boards, a one-time Common Crawl snapshot from `Feashliaa/job-board-aggregator`
     — not a live sync). Both share the same title/location/date prefilter as the ATS
     path. This was previously undocumented here — Section 3 now describes it. Confirmed
@@ -207,11 +230,72 @@ repeating it.
     write-into-column-J bug. **Fix:** `appendJobsRows` now writes only columns A:I
     (`offerToRow` no longer returns a 10th value) and uses `insertDataOption:
     'OVERWRITE'` instead of `INSERT_ROWS`, so existing rows — and the formula's cell
-    references — are never shifted. `readJobsUrls`'s read range was also narrowed from
+    references — are never shifted. `readJobsUrls`'s (now `readJobsTab`'s) read range was also narrowed from
     `A:J` to `A:I` for consistency, though this was never the source of the bug (a read
     past the real data does no harm). Verified live: after the fix, `node
     src/digest/index.mjs` appended 2 real rows, `J1` still read `capply_command` with
     no error, and the formula's references stayed at `E2:E`/`G2:G`.
+37. **Aggregator board lists trimmed to a curated top 250 per platform, minus dead
+    boards — 464 total (2026-09-29).** After the 2026-09-20 expansion, the three
+    aggregators scanned ~15,800 Common Crawl-harvested boards per run (8,333 Greenhouse,
+    4,368 Lever, 3,161 Ashby), which was producing thousands of offers per day — far
+    more than Phase 3 can usefully handle. `known-{greenhouse,lever,ashby}-boards.json`
+    now each hold a hand-curated top-250 list for that platform, stored in rank order
+    with real display names as `company` (the old import mostly repeated the slug).
+    Every slug came from the old lists, but a live check showed 287 of the 750 returned
+    HTTP 404 — the company has since moved to another ATS (e.g. Anthropic, OpenAI and
+    Databricks are no longer on Lever). Those were dropped for now, leaving 172
+    Greenhouse, 81 Lever and 211 Ashby boards. Re-homing them on their current platform
+    (e.g. via `discover-company.mjs`) is a possible follow-up. No scan logic changed:
+    `fetchAggregatorOffers()` and each `fetchAggregator()` already default to the bundled
+    JSON, and `portals.yml`'s per-aggregator `boards:` override still works. The full
+    lists are recoverable from git history (the commit before this change).
+38. **The digest applies a freshness window and per-company caps (2026-09-29).** Even
+    at 464 boards, one run surfaced 834 jobs, with single companies contributing 105
+    (SpaceX) and 80 (Anduril). `src/digest/select-jobs.mjs` now runs after the Jobs-tab
+    URL dedupe: drop jobs first posted more than 14 days ago; sort newest first; send at
+    most 3 per company per day (rows already found today count) and at most 10 per
+    company in any rolling 30 days (counted from the Jobs tab's `date_found` +
+    `company` columns). Held-back jobs are not recorded — they're reconsidered next run
+    until they age out. The email shows a "Held back: …" line so a short digest isn't
+    mistaken for a quiet day. Limits live in `candidate-profile.yml` →
+    `digest_limits` (null disables a rule). **Why in the digest, not the scan:** the
+    Routine's scan starts with an empty history every day, so a scan-side cap would pick
+    the same 3 jobs daily and the URL dedupe would then drop all of them. **Why
+    first-posted dates:** the fetchers now emit `posted_at` from Greenhouse
+    `first_published`, Lever `createdAt` and Ashby `publishedAt` — never Greenhouse's
+    `updated_at`, which differed from `first_published` for 669 of 710 Stripe jobs.
+39. **`title_filter.negative` extended from a live dry run (2026-09-29).** Added
+    Clearance, Secret, Data Center, Facilities, Construction, Supervisor, Administrator,
+    Specialist, Distinguished, III, IV, PhD, Student, Contractor, Consultant,
+    Representative, Operator, Steward and Electronics after reviewing the 834 titles that
+    passed the old filter — removed 56 clear mismatches (cleared/defense roles,
+    data-center ops, above-new-grad levels, part-time/contract, consulting). "Safety" was
+    deliberately *not* added: it would also drop Trust & Safety and AI Safety roles.
+40. **Board fetches: 30s timeout that really cancels, plus one retry (2026-09-29).**
+    With the old 10s limit, one or two boards were skipped every run — including
+    high-value ones (OpenAI, Anduril, Veeva). Timing every request in a full scan showed
+    the slow ones weren't hung, they were huge: Lever and Ashby always return full
+    descriptions, so e.g. Veeva's Lever board is ~12.7 MB and 49 boards exceed 1 MB,
+    which with 18 concurrent downloads could cross 10s. The old timeout also only
+    stopped *waiting* — the abandoned download kept using bandwidth. Now
+    `src/scan/aggregators/fetch-board.mjs` gives each board 30s, aborts the request on
+    timeout (the ATS fetchers forward an `AbortSignal` to `fetch()`), and retries once
+    after 1s on a timeout, network error or HTTP 429/5xx. A 4xx (e.g. 404 — the company
+    left that ATS) fails immediately. Retries are logged as `[<ats> aggregator]
+    retrying <slug> (<reason>)`. Verified with three consecutive live scans: zero
+    skipped boards, identical results each run; one run retried three Greenhouse
+    boards that stalled for the full 30s, and all three succeeded on retry.
+41. **Dead code removed (2026-09-29).** Deleted, with nothing calling any of it:
+    the CV-embedding ranker from the old Layer 2 top-10 cutoff (`src/lib/embed-ranker.mjs`,
+    the 23 MB `models/` directory holding all-MiniLM-L6-v2, and the
+    `@xenova/transformers` dependency — the ranker has been off the daily path since
+    #29); the leftover `winners`/`rankingInfo`/unused `cvMarkdown` plumbing in
+    `src/scan/index.mjs`; the never-wired `maxBoardsPerRun` option on the three
+    aggregators; the `readJobsUrls()` wrapper (superseded by `readJobsTab()`); and the
+    unused `digest_min_score` profile field. None of this touched the AI calls that
+    remain (`capply`'s free-text answers and `/score` both use `claude -p`). Everything
+    is recoverable from git history.
 
 ---
 
@@ -300,17 +384,18 @@ md5sum ~/claude-apply/<destination path>   # confirm hashes match before committ
 
 ```mermaid
 flowchart TD
-    A["Cloud Routine fires<br/>7:00 AM daily, PC off"] --> B["<b>Phase 1 — Discovery & Prefilter</b><br/>cloud, deterministic, $0 AI"]
-    B -->|"node src/scan/index.mjs<br/>reads portals.yml → Lever/Greenhouse/Ashby APIs<br/>title + location prefilter"| C[("data/pipeline.md")]
-    C --> D["<b>Phase 2 — Batched Scoring</b><br/>cloud, ONE AI call for the whole batch"]
-    D -->|"cv.md once + ALL postings<br/>→ array of score + reason"| E[("data/evaluations.jsonl")]
-    E -->|"filter: score ≥ threshold, today only"| F["<b>Phase 3 — Digest</b><br/>cloud, $0 AI<br/>writes 1 row/day to Google Sheets"]
-    F -->|"Zapier: New Spreadsheet Row<br/>→ Send Gmail"| G["📧 You review digest,<br/>pick a job, copy its URL"]
+    A["Cloud Routine fires<br/>7:00 AM daily, PC off"] --> B["<b>Phase 1 — Scan & Prefilter</b><br/>cloud, deterministic, $0 AI"]
+    B -->|"464 curated boards<br/>Greenhouse · Lever · Ashby APIs<br/>title + location + date prefilter"| C[("data/todays-offers.json<br/>hand-off, overwritten each run")]
+    C --> F["<b>Phase 3 — Digest</b><br/>cloud, $0 AI"]
+    J[("Jobs tab<br/>durable cross-day record")] -->|"URLs already sent<br/>+ per-company history"| F
+    F -->|"drop seen URLs → ≤14 days old →<br/>newest first → ≤3/company/day, ≤10/30 days"| J
+    F -->|"1 summary row per run"| D[("Digest tab")]
+    D -->|"Zapier: New Spreadsheet Row<br/>→ Send Gmail"| G["📧 You review the Jobs tab,<br/>pick a job"]
     G --> T["💻 <b>You open a WSL2 terminal</b><br/>capply &lt;url&gt; · no Claude Code"]
     T --> H["<b>Phase 4 — Local Apply</b><br/>WSL2/Ubuntu · Playwright over CDP"]
     H --> H1["Step A — scan every field<br/>💲0 AI"]
     H1 --> H2["Step B — fill known fields<br/>from profile · 💲0 AI<br/>⏱ 8s timeout per field"]
-    H2 --> H3["Step C — 1 AI call<br/>ONLY if a real free-text field exists"]
+    H2 --> H3["Step C — 1 AI call<br/>free-text + unrecognized choices only"]
     H3 --> H4["Step D — upload resume<br/>💲0 AI"]
     H4 --> H5["🛑 Step E — TRIPWIRE<br/>halt · never clicks Submit"]
     H5 --> I["✅ You review, solve CAPTCHA,<br/>click Submit yourself"]
@@ -324,28 +409,18 @@ flowchart TD
     classDef tripwire fill:#fde2e1,stroke:#c53030,color:#1a1a1a,font-weight:bold
     classDef pause fill:#fef3c7,stroke:#b45309,color:#1a1a1a
 
-    class B,C,H1,H2,H4 free
-    class D,E,H3 ai
-    class A,F,G,I,T human
+    class B,C,F,J,D,H1,H2,H4 free
+    class H3 ai
+    class A,G,I,T human
     class H5 tripwire
     class P pause
 ```
 
 _Renders automatically as a flowchart on GitHub. In VS Code, install the "Markdown Preview Mermaid Support" extension if it doesn't render._
 
-**Note the two changes vs. earlier versions of this diagram:** the handoff from digest to
-Phase 4 is now an explicit manual terminal step (`capply`, Decision #24) rather than a
-Claude Code slash command, and the captcha pause/resume loop (Decision #25) is shown as a
-real branch off the fill step, since it's now a normal part of a Lever run rather than a
-failure mode.
-
-**Not yet redrawn (2026-09-18):** this diagram still shows Phase 2 (batched scoring) on
-the daily path from Phase 1 to Phase 3. As of Decisions #29 and #32, the daily Routine
-skips Phase 2 entirely — Phase 1 hands its survivors straight to Phase 3 via
-`data/todays-offers.json`, and Phase 3 gates on the Jobs tab (not `evaluations.jsonl`)
-before writing the digest row. See Sections 3, 5 and 8 for the current mechanism; treat
-the box for Phase 2 here as "exists in the repo, not on the daily path" until the
-diagram itself is updated.
+Redrawn 2026-09-29 to match the real daily path: Phase 2 (batched scoring) is no longer
+on it (Decision #29), the scan hands off through `data/todays-offers.json` (#32), and
+the digest gates on the Jobs tab (#30) and the freshness/per-company limits (#38).
 
 ---
 
@@ -359,33 +434,44 @@ scans `tracked_companies` only) or `--source all` (both)
 (2026-08-26).** Prefilters by title/blacklist/location/date, dedupes against
 `data/scan-history.tsv`, appends survivors to `data/pipeline.md`, and — since 2026-09-18
 (Decisions #29, #32) — writes the same survivors to `data/todays-offers.json` for Phase 3
-to pick up. There is no ranking or top-N cutoff anymore: every survivor goes through, not
-just the top 10 by CV-embedding similarity.
+to pick up. There is no ranking or top-N cutoff in the scan: every survivor goes
+through, and the digest decides what's actually sent (Decision #38). **In the cloud,
+`data/scan-history.tsv` starts empty every run**, so the scan's own dedupe only removes
+duplicates within that run (e.g. one role posted under several city URLs); cross-day
+dedupe happens in the digest against the Jobs tab (Decision #30).
+
+**Every offer carries `posted_at`** — the ISO date the job was *first* published
+(Greenhouse `first_published`, Lever `createdAt`, Ashby `publishedAt`), or `''` if the
+ATS doesn't expose one (Workable, Workday). Normalized by `src/lib/posted-at.mjs`.
+
+**Title filter (`portals.yml` → `title_filter`):** whole-word, case-insensitive. A title
+must contain a positive term (Data/Analyst/Scientist/Engineer/Analytics), none of the
+negative terms (seniority, non-software engineering disciplines, non-engineering roles,
+and the 2026-09-29 additions in Decision #39), and one `required_any` domain term
+(Data/Software/Analytics/Machine Learning/AI/ML). The aggregators apply this filter
+themselves, before `runScan` sees any offers — so title-rejected aggregator offers are
+never written to `filtered-out.tsv`.
 
 **Two discovery sources, chosen by `--source` (Decision #33):**
 - **`ats`** (the default when `--source` is omitted) — scans only the companies listed
-  in `config/portals.yml`'s `tracked_companies`. These are mock/manual-test entries as
-  of 2026-09-05 and are **not** part of the daily path — useful for a fast, small-scale
-  smoke test (`--only <slug>` narrows to one), not for real discovery at scale.
+  in `config/portals.yml`'s `tracked_companies`, which has been **empty since
+  2026-09-19** (the old entries were mock/test only). Add an entry back to smoke-test
+  one company (`--only <slug>`); not part of the daily path.
 - **`aggregator`** — what the daily Routine actually runs. Skips `tracked_companies`
-  entirely and queries the two company-agnostic aggregators configured in `portals.yml`'s
-  `aggregators:` block:
-  - **Greenhouse** (`src/scan/aggregators/greenhouse.mjs`) — ~20 curated public boards
-    (`known-greenhouse-boards.json`).
-  - **Lever** (`src/scan/aggregators/lever.mjs`) — 4,368 boards
-    (`known-lever-boards.json`, a one-time import of `Feashliaa/job-board-aggregator`'s
-    Common Crawl snapshot — a static list, not a live sync; new Lever companies since
-    the crawl won't appear until the list is refreshed by hand). Fetches all boards
-    concurrently (6 at a time, 10s timeout per board so one hung request can't stall the
-    whole run) and shuffles the board order each run so the same alphabetically-early
-    slugs don't always get checked first. `maxBoardsPerRun` is accepted by the
-    aggregator function itself but is **not currently wired through** from
-    `portals.yml`'s config — every enabled aggregator always scans its full board list
-    regardless of any cap set there (see Open Items).
-  Both aggregators tag their offers (`source: 'aggregator:lever'` /
-  `'aggregator:greenhouse'`) and feed into the exact same title/location/date prefilter
-  as `tracked_companies` results — there is no separate filtering path for aggregator
-  results.
+  entirely and queries the three company-agnostic aggregators configured in
+  `portals.yml`'s `aggregators:` block — **Greenhouse**, **Lever** and **Ashby**
+  (`src/scan/aggregators/{greenhouse,lever,ashby}.mjs`). Each scans a curated list of
+  companies for its platform (`known-{greenhouse,lever,ashby}-boards.json`, 464 boards
+  total — Decision #37); a `boards:` list in `portals.yml` overrides one aggregator's
+  list. All three run concurrently with each other, each fetching its own boards 6 at a
+  time through `fetchBoard()` — 30s timeout per board that actually cancels the
+  request, plus one retry on timeout/network error/429/5xx (Decision #40) —
+  and shuffle the board order each run. Every run scans every board on the list; to
+  scan fewer, trim the JSON or set `boards:`.
+  Each aggregator tags its offers (`source: 'aggregator:greenhouse'` /
+  `'aggregator:lever'` / `'aggregator:ashby'`) and feeds into the exact same
+  title/location/date prefilter as `tracked_companies` results — there is no separate
+  filtering path for aggregator results.
 - **`all`** — runs both `ats` and `aggregator` sources in the same scan.
 
 **`portals.yml` and `target_locations` fixed 2026-08-26.** Title filter broadened from
@@ -402,12 +488,16 @@ existed).
 target zones, but the matching logic itself only recognized a location if it literally
 contained "Remote"/"United States"/"USA" — which almost no real `"City, ST"` posting
 does. This was silently discarding the overwhelming majority of aggregator results
-across all 4,368+ boards. Now fixed with real US-state matching (state names and postal
+across the then-4,368+ Lever boards. Now fixed with real US-state matching (state names and postal
 abbreviations) — see Decision #34 for the full mechanism and how it was verified.
 
 ---
 
 ## 4. Phase 2 — Batched Scoring (Cloud, 1 AI call per run)
+
+> **Not on the daily path since 2026-09-18 (Decisions #29, #35).** Everything below
+> still works standalone (`/score <url>`, `npm run score:batch`) and is kept for
+> reference in case scoring is re-enabled; the status notes are historical.
 
 **Status: confirmed working end-to-end in production (2026-08-26).** 19 real postings in,
 17 survived liveness filtering, scored in one `claude -p` call, 0 crossed the
@@ -474,8 +564,9 @@ model's judgment on rejected postings.
 
 **Status: confirmed working end-to-end 2026-08-24** (original evaluations-based version).
 **Rewritten 2026-09-18** to drop Phase 2 scoring from the daily path — see Decisions
-#28-32. Not yet re-verified live against a real cloud Routine run as of this writing;
-verify with `--dry-run` first, then a real run, before trusting it unattended.
+#28-32 — and a real digest run appended rows correctly after the #36 fix. **Selection
+limits added 2026-09-29 (Decision #38)**, verified with a local scan + `digest --dry-run`
+(75 of 706 selected); not yet exercised by the cloud Routine.
 
 **Mechanism (current):**
 
@@ -486,20 +577,28 @@ verify with `--dry-run` first, then a real run, before trusting it unattended.
    (`src/lib/google-sheets-jobs.mjs`) — the durable cross-day record, since `data/`
    doesn't survive between cloud Routine runs (Decision #30). **If that read fails, the
    run stops here — no Jobs write, no email.**
-3. Offers whose `url` isn't already in the Jobs tab are appended there in **one batch
+3. `selectJobs()` (`src/digest/select-jobs.mjs`, Decision #38) narrows the unseen
+   offers: drop anything first posted more than `max_posting_age_days` (14) ago, sort
+   newest first (undated last), then keep at most `per_company_per_day` (3) per company
+   — counting rows already found today — and at most `per_company_per_window` (10) per
+   company within the last `window_days` (30), counted from the Jobs tab's `date_found`
+   and `company` columns (same single read as the URLs). Held-back offers aren't
+   written anywhere; they're reconsidered on the next run.
+4. The selected offers are appended to the Jobs tab in **one batch
    call**, columns A:I only — `date_found | company | title | location | url |
    platform | apply_url | status | notes` (`status`/`notes` left blank for the user).
    **`capply_command` (column J) is never written at all** — fixed 2026-09-18, see
    Decision #36. It used to be written as an always-blank 10th value, which combined
    with `INSERT_ROWS` (also since fixed) to break the formula in production with a
    real `#REF!` error.
-4. **Only after that append succeeds**, one row is appended to the Digest tab: `date`,
+5. **Only after that append succeeds**, one row is appended to the Digest tab: `date`,
    `subject`, `job_count`, `body`. `body` is now a *summary* — new-role count, a
-   breakdown by platform, top companies, and a link to open the Jobs tab — not one card
+   breakdown by platform, top companies, a "Held back: …" line when the limits dropped
+   anything, and a link to open the Jobs tab — not one card
    per job with a score and reasons, since that detail came from Phase 2's output,
    which no longer runs. **This row is written every run, including 0 new roles**
    (Decision #31) — a missing email should mean something broke, not "quiet day".
-5. Zapier watches the Digest tab — **Trigger: Google Sheets → "New Spreadsheet Row"**
+6. Zapier watches the Digest tab — **Trigger: Google Sheets → "New Spreadsheet Row"**
    (Instant) → **Action: Gmail → "Send Email"**, Subject/Body mapped from the row.
    **Body type: HTML** (unchanged — the Digest tab's column shape and the Zap itself
    didn't need to change for this rewrite).
@@ -523,11 +622,18 @@ verify with `--dry-run` first, then a real run, before trusting it unattended.
   `appendJobsRows` in `src/lib/google-sheets-jobs.mjs` is still using range `A:I` and
   `insertDataOption: 'OVERWRITE'`.
 
+**Jobs tab hygiene:** don't delete rows. A deleted URL looks unsent and comes back the
+next day, and deleted rows no longer count toward the per-company caps. Use the `status`
+column to hide or track jobs instead.
+
 Spreadsheet ID in `candidate-profile.yml` as `digest_sheet_id`, shared by both tabs
 (resolution: `--sheet-id` flag → `$GOOGLE_SHEETS_DIGEST_ID` → profile). Tab names:
 `digest_sheet_name` (default `Digest`), `jobs_sheet_name` (default `Jobs`). Optional
 `jobs_sheet_gid` makes the digest email's "Open the Jobs tab" link land on that exact
-tab instead of the spreadsheet's default view.
+tab instead of the spreadsheet's default view. Selection limits: `digest_limits`
+(`max_posting_age_days`, `per_company_per_day`, `window_days`,
+`per_company_per_window`; defaults 14/3/30/10; `null` disables one; validated by the
+profile schema).
 
 **Auth — Google service account:** `digest-writer@claude-apply.iam.gserviceaccount.com`,
 scoped to `spreadsheets` only, shared as Editor on the target Sheet. Dual-path credential
@@ -540,8 +646,9 @@ delivery (Decision #18): local key file at `config/google-service-account.json` 
 2-step limit. Trigger checks never consume tasks — only the Gmail send does, ~1 task/day
 against a 100/month allowance.
 
-**`--dry-run` skips the Jobs tab read (assumes every candidate offer is new) and prints
-what would be appended to both tabs; writes nothing.**
+**`--dry-run` skips the Jobs tab read (assumes every candidate offer is new, and applies
+the limits as if the tab were empty) and prints what would be appended to both tabs;
+writes nothing.**
 
 ---
 
@@ -553,6 +660,23 @@ what would be appended to both tabs; writes nothing.**
 review (6 required)**, every field resolving in well under a second except the one AI
 call. This followed a full day of debugging real, reproducible bugs — documented below,
 since the debugging path matters as much as the fixes.
+
+**Since then (details in `daily-recap-2026-08-29.md` and `src/apply/eeo-match.mjs`):**
+- **2026-08-29, Lever accuracy — same Epoch AI form went from 8 review (5 required) to 5
+  review (2 required).** Unrecognized dropdowns/radios now go into the same batched AI
+  call as free-text questions (Claude must pick an exact on-page option or decline),
+  grounded by seven new profile preference fields (`work_authorized`,
+  `relocation_flexible`, `preferred_hours_per_week`, `remote_preference`,
+  `willing_to_travel_percent`, `salary_expectation`, `referral_source`). `work_auth` now
+  maps to the boolean `work_authorized`, a `country` classifier rule was added, and the
+  real root cause of several radio failures — `extractLabel()` in
+  `dom-label.browser.js` returning question text instead of each option's own label —
+  was fixed.
+- **2026-09-19/20, Greenhouse accuracy.** First live Greenhouse form (Anthropic).
+  `eeo-match.mjs` matches the *intent* of the profile's veteran/disability answers
+  ("not a veteran") to differently-worded options ("I am not a protected veteran")
+  without ever guessing across intents; React-Select menus are now scoped to the field
+  that opened them; `availability` got its own classifier rule.
 
 **Why `/apply` was retired as the daily path (Decision #24).** Every `/apply` failure
 traced to Claude Code's permission/tool-call layer — a rejected Bash prompt, a tool call
@@ -637,9 +761,9 @@ words, "never invent experience." Forms with only standard fields need **zero** 
 **This is the only place in the pipeline an essay is ever written** (Decision #11).
 
 **Step D — Resume upload ($0 AI):** `upload-file.mjs` sets the file directly on the
-`<input type="file">` via CDP. **Still never exercised in a real `capply` run** — the
-2026-08-27 test correctly flagged `cv_upload` for review because `config/cv.pdf` doesn't
-exist yet (only `cv.md`). See Open Items.
+`<input type="file">` via CDP. The 2026-08-27 test flagged `cv_upload` for review
+because `config/cv.pdf` didn't exist yet; it has since 2026-09-03. A successful live
+upload isn't recorded in these notes yet (see Open Items).
 
 **Step E — TRIPWIRE:** halts unconditionally at the review screen, never calls Submit.
 Confirmed working in the live test — detected the real "Submit application" button and
@@ -652,7 +776,8 @@ classifier rule, correctly `unknown` rather than guessed; 3 free-text questions 
 correctly declined per its grounding rules, one of which required filling out a separate
 Google Doc). One real open bug: **`work_auth` "no confident option match"** — the profile
 holds a descriptive sentence ("EU citizen — no sponsorship needed") but `chooseOption()`
-only recognizes literal yes/no/true/false for a Yes/No radio. See Open Items.
+only recognizes literal yes/no/true/false for a Yes/No radio. **Resolved 2026-08-29** —
+see "Since then" at the top of this section.
 
 ---
 
@@ -674,20 +799,28 @@ Every file below was opened and read directly — not assumed from the README.
 | `apply-log.mjs` | JSON-line logging of each apply attempt | No |
 | `score/prompt-builder.mjs` | `buildPrompt()` / `buildBatchPrompt()` — English/US criteria, 0-10 scale, `{score, reason}` | Builds Phase 2's prompt |
 | `score/jd-truncate.mjs` | `truncateJd()` — genuine section-based extraction, not a blunt cutoff | No |
-| `score/index.mjs` | `fetchOfferBody()` — Lever via plain `fetch()` to the public board API (Decision #23); non-Lever falls back to Playwright. `--batch` builds one prompt for all pending offers | 1 batched call per `--batch` run |
+| `score/index.mjs` | **Not on the daily path (Decision #29).** `fetchOfferBody()` — Lever via plain `fetch()` to the public board API (Decision #23); non-Lever falls back to Playwright. `--batch` builds one prompt for all pending offers | 1 batched call per `--batch` run |
 | `apply/index.mjs` | Phase 4 orchestrator. **Substantially rewritten 2026-08-27:** `waitOutCaptcha()` pause/resume (#25), `FIELD_TIMEOUT_MS` per-field cap (#26), live per-field logging, `RADIO_INVALID_KEYS` guard + fast-fail `<select>` (#27). Confirmed live against a real 20-field Lever form via `capply`. Does NOT yet call `cover-letter.mjs` | 1 batched call per page, free-text only |
 | `.claude/commands/apply.md` | Thin wrapper around `index.mjs`. Still functional, **no longer the documented daily-use path** (Decision #24) | No |
-| `digest/index.mjs` | **Rewritten 2026-09-18.** Reads `data/todays-offers.json` (not `evaluations.jsonl`), reads the Jobs tab's `url` column for cross-day dedupe, appends new jobs there, then appends a summary row to the Digest tab — every run, including 0 new. Auth via env var (cloud) or file (local), unchanged. | No |
-| `lib/candidate-profile.schema.mjs` | `validateProfile()` — strict allowlist; rejects unknown keys. Updated 2026-08-24 (digest keys) and 2026-08-26 (`target_locations`) | No |
+| `apply/eeo-match.mjs` | Intent-based EEO option matching (decline / negative / affirmative / explicit category) for veteran and disability questions; returns null rather than guess. Added 2026-09-19 | No |
+| `scan/aggregators/{greenhouse,lever,ashby}.mjs` | `fetchAggregator()` — fetches every board in the bundled `known-*-boards.json` (or a `boards:` override), 6 at a time via `fetchBoard()` (30s timeout with cancellation, one retry — Decision #40), shuffled order; applies `title_filter` per board as responses arrive. 464 boards total (Decision #37) | No |
+| `scan/ats/{greenhouse,lever,ashby}.mjs` | Per-board fetchers (`{ includeBody: false }` for the aggregators). Emit `posted_at` from the first-published date (Decision #38) | No |
+| `lib/posted-at.mjs` | `normalizePostedAt()` — epoch ms or date string → ISO UTC, `''` if missing/invalid | No |
+| `lib/todays-offers.mjs` | Scan → digest hand-off file; overwritten each run; carries `posted_at` | No |
+| `lib/google-sheets-jobs.mjs` | `readJobsTab()` — one read of the Jobs tab returning seen URLs plus `{ dateFound, company }` history; throws `JobsTabReadError` on any failure. `appendJobsRows()` — one batch append, A:I, OVERWRITE (Decision #36) | No |
+| `digest/select-jobs.mjs` | `selectJobs()` — freshness window, newest-first ordering, per-company daily and rolling caps; `resolveDigestLimits()` reads `digest_limits` (Decision #38) | No |
+| `digest/index.mjs` | **Rewritten 2026-09-18, extended 2026-09-29.** Reads `data/todays-offers.json`, reads the Jobs tab (URLs + per-company history), drops seen URLs, applies `selectJobs()`, appends the selected jobs, then a summary row (with a "Held back" line) to the Digest tab — every run, including 0 new. Auth via env var (cloud) or file (local). | No |
+| `lib/candidate-profile.schema.mjs` | `validateProfile()` — strict allowlist; rejects unknown keys. Updated 2026-08-24 (digest keys), 2026-08-26 (`target_locations`), 2026-08-29 (application-preference fields) and 2026-09-29 (`digest_limits`, validated via `resolveDigestLimits()`) | No |
 | `lib/load-profile.mjs` | `loadProfile()` — reads + validates the profile; called by both scan and score, which is why a schema mismatch blocks Phase 1 even for a Phase-3-only field (Decision #21) | No |
 
 ---
 
 ## 8. Cloud Routine & Environment Configuration
 
-**Status (2026-09-18): the live Routine is currently out of sync with the intended
-design in two directions at once — both need a manual fix in the Routine's own cloud
-UI (not a repo file):**
+**Status (last recorded 2026-09-18 — not re-checked since; confirm in the Routine UI
+before the first run on the Decision #37/#38 changes): the live Routine is out of sync
+with the intended design in two directions at once — both need a manual fix in the
+Routine's own cloud UI (not a repo file):**
 1. It's still running a 4-step sequence including `node src/score/index.mjs --batch`,
    even though `digest` hasn't read that step's output since 2026-09-18 (Decisions
    #29, #32, #35) — so it's spending an AI call on a step nothing downstream uses.
@@ -747,13 +880,17 @@ deleted from the repo — `src/score/` still exists and still works standalone (
 Decision #20 for why that split matters.
 
 **Custom Environment `claude-apply` configuration:**
-- **Network access:** Custom (not "Trusted" — Decision #19), allowing:
+- **Network access:** Custom (not "Trusted" — Decision #19), allowing (as last recorded
+  here — **verify in the Environment UI**):
   - `api.lever.co` (Phase 1 scan, and Phase 2's Lever body-fetch — Decision #23)
   - `sheets.googleapis.com`, `oauth2.googleapis.com` (Phase 3)
   - "Also include default list of common package managers" — checked, so `npm install`
     works alongside the custom domains
-  - **Not yet added, needed if `portals.yml` grows:** `api.ashbyhq.com`,
-    `*.myworkdayjobs.com` per company
+  - **Required by the daily scan but not recorded as added:** `boards-api.greenhouse.io`
+    and `api.ashbyhq.com`. Without them, every Greenhouse and Ashby board fails with a
+    network error that the aggregators log as a per-board warning — the run still
+    "succeeds", with only Lever's ~81 boards actually scanned. `*.myworkdayjobs.com`
+    only matters if Workday companies are added to `tracked_companies`.
   - **Deliberately NOT added:** `cdn.playwright.dev` — an attempted
     `npx playwright install chromium` step 403'd on this domain, then turned out to be
     unnecessary once `PLAYWRIGHT_BROWSERS_PATH` pointed at the pre-installed browser
@@ -779,23 +916,18 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
 - [x] ~~Phase 2's multi-offer batching is unproven in production.~~ **Resolved 2026-08-26** — 17 live offers, one batch call, real distinct scores.
 - [x] ~~`config/cv.md` is uncommitted and never exercised by a cloud run.~~ **Resolved 2026-08-26** — force-committed, confirmed read in the cloud.
 - [x] ~~`/apply` hangs or fails with no clear cause, hard to debug.~~ **Resolved 2026-08-27 (Decisions #24-27)** — root-caused to Claude Code's permission layer plus real, now-fixed bugs. `capply` + live per-field logging replace the opaque flow.
-- [ ] **`work_auth` "no confident option match" — real, unresolved.** `work_authorization`
-      is a descriptive sentence ("EU citizen — no sponsorship needed"), but
-      `chooseOption()` only recognizes literal yes/no/true/false for a Yes/No radio.
-      Needs a design decision: a dedicated boolean profile field, or deriving yes/no from
-      the existing text.
-- [ ] **No classifier rule for "which country do you work from" questions**, despite the
-      profile already having a `country` field that answers it. Currently correctly falls
-      to `unknown`/review. Cheap win — we already have the real HTML (a plain `<select>`
-      with ~195 country options).
-- [ ] **EEO dropdown defaults don't match real on-page option text.** Code defaults to
-      `'Prefer not to say'`; Epoch AI's Lever form says "Decline to self-identify". Now
-      fails fast with a clear reason (Decision #26) rather than hanging, but the mismatch
-      is unresolved — and likely varies by company, so a single hardcoded default may
-      never reliably match. Worth reusing `chooseOption()`'s existing decline-detection
-      logic for select-type EEO fields, not just radio-groups.
-- [ ] **`config/cv.pdf` doesn't exist — only `cv.md`.** Resume upload has therefore never
-      run in a real `capply` session. Needs a real PDF at the profile's `cv_path`.
+- [x] ~~`work_auth` "no confident option match".~~ **Resolved 2026-08-29** — mapped to
+      the new boolean `work_authorized`, plus the `extractLabel()` fix (Section 6).
+- [x] ~~No classifier rule for "which country do you work from" questions.~~ **Resolved
+      2026-08-29** — `country` rule added (last in the rule list so more specific rules
+      win).
+- [ ] **EEO option wording varies per company — partially resolved 2026-09-19.**
+      `eeo-match.mjs` now matches veteran/disability answers by intent. Gender/ethnicity
+      still use the plain exact/prefix/substring matcher, and a decline default like
+      `'Prefer not to say'` vs. a page's "Decline to self-identify" may still go to
+      review for those.
+- [ ] **Resume upload not yet recorded as working live.** `config/cv.pdf` exists since
+      2026-09-03; confirm a real `capply` run fills `cv_upload` and note it here.
 - [x] ~~Phase 3's digest still says `/apply <url>`, not `capply "<url>"`.~~ **Resolved
       2026-09-18 (Decision #32)** — the digest email no longer includes a per-job apply
       command at all; that moved to the Jobs tab's `capply_command` formula column.
@@ -807,44 +939,47 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       postings.~~ **Resolved 2026-09-18 (Decision #34)** — added US state name/
       abbreviation matching. Verified live: 3 new candidates surfaced in a smoke test
       that the old filter had been dropping.
-- [ ] **Aggregator-based daily discovery (Decision #33) has not yet been run to
-      completion since the location-prefilter fix.** A manual `--source aggregator
-      --dry-run` was started to measure the fix's real before/after impact at full
-      scale (4,368 Lever boards + ~20 Greenhouse boards) but was stopped manually
-      partway through (~2,700/4,368 Lever boards checked, no errors observed). Run it
-      to completion and compare the "after filter" counts to before the fix.
+- [ ] **Measure real daily volume on the Decision #37/#38 setup.** Local measurement
+      2026-09-29: 2,230 raw → 706 after the prefilter → 75 selected on day one (Jobs tab
+      empty). Of those 75, 35 were posted within 7 days, suggesting roughly 5-10/day
+      afterwards — confirm from the first week of real digests, then tune the window,
+      caps, board lists or `title_filter`.
+- [ ] **Add `boards-api.greenhouse.io` and `api.ashbyhq.com` to the Routine's network
+      allowlist** (Section 8) — without them, Greenhouse and Ashby silently return
+      nothing.
+- [x] ~~One or two boards per run time out at random and are skipped for the day.~~
+      **Resolved 2026-09-29 (Decision #40)** — 30s timeout with real cancellation plus
+      one retry; three consecutive live scans had zero skipped boards.
+- [ ] **287 curated companies were dropped because they left the listed ATS** (Decision
+      #37) — e.g. Anthropic/OpenAI/Databricks on Lever, OpenAI/Notion/Ramp on
+      Greenhouse. `discover-company.mjs` could find their current board.
+- [ ] **Role-level dedupe doesn't persist across days.** The Jobs tab dedupes by exact
+      URL only; a company reposting the same role under a new URL shows up again.
+- [ ] **Real personal data is committed** (`config/cv.md`, `cv.pdf`,
+      `candidate-profile.yml` — Decision #22), against the repo's invariant. Options:
+      keep the repo private and accept it, or move the data into the Routine's
+      environment variables and untrack the files (history would still need cleaning).
 - [ ] **The live cloud Routine's instructions are still out of sync with the intended
       design (Section 8) as of this writing** — still 4-step with the score call, and
       needs to be manually edited in the Routine's own cloud UI. Not a code change; a
       config change outside this repo. Verify with a manual "Run now" after editing.
-- [ ] **`maxBoardsPerRun` is accepted by `fetchAggregator()` (both Lever and
-      Greenhouse) but is never actually read from `portals.yml`'s `aggregators:`
-      config in `src/scan/index.mjs`'s `fetchAggregatorOffers()`.** Every enabled
-      aggregator always scans its entire board list regardless of any cap set in
-      config — found while reviewing the aggregator code on 2026-09-18. Not currently
-      causing incorrect behavior (there's no cap set today, and Decision #29 already
-      removed the old top-10-results cutoff deliberately), but worth wiring through if
-      a future need arises to bound run time or board count.
-- [ ] **`src/scan/aggregators/lever.mjs`'s file-header comment is now stale.** It
-      describes a "TEMPORARY (2026-09-05)" cap of 10 new offers per scan via an
-      `index.mjs` constant called `MAX_NEW_OFFERS_PER_RUN` — that constant no longer
-      exists in `src/scan/index.mjs` (removed per Decision #29's top-10 cutoff
-      removal). The comment should be updated or removed; it currently describes
-      behavior that isn't there anymore. Cosmetic only, found 2026-09-18.
+- [x] ~~`maxBoardsPerRun` is accepted by `fetchAggregator()` but never read from
+      `portals.yml`.~~ **Removed 2026-09-29 (Decision #41)** — with 464 boards and a
+      ~20-60s scan, there's no need to cap boards per run.
+- [x] ~~`src/scan/aggregators/lever.mjs`'s file-header comment is stale (describes
+      the removed `MAX_NEW_OFFERS_PER_RUN` cap).~~ **Resolved 2026-09-29** — header
+      rewritten alongside Decision #37.
 - [ ] **`google-service-account.json`'s key was pasted into chat history during setup.**
       Rotate as routine hygiene once Phase 3 iteration settles. Low risk (Sheets-only
       scope, one non-sensitive spreadsheet, solo account).
-- [ ] **Digest emails render as plain text** — Markdown shows literally. Deliberate POC
-      simplification; upgrading needs a Markdown→HTML step in the Zap or HTML rendering
-      in `digest/index.mjs`.
+- [x] ~~Digest emails render as plain text.~~ **Resolved** — `buildDigestHtml()` renders
+      HTML and the Zap's Body type is HTML (Section 5).
 - [ ] **Non-Lever platforms still use Playwright for Phase 2 body-fetching, unproven in
       the cloud sandbox.** Greenhouse and Ashby both already expose body text via their
       own public APIs (`fetchGreenhouse`, `fetchAshby` map a `body` field the same way
       `fetchLever` does), so Decision #23's fix pattern applies directly when needed.
       Workday is harder — its listing API returns no descriptions and per-posting
       detail-fetch is explicitly unimplemented.
-- [ ] **Network allowlist only covers Lever + Google APIs** — adding Ashby or Workday
-      companies will need their domains added, or those scans silently 403-fail.
 - [ ] **The Environment's setup script still has a redundant `npm install`** — harmless,
       worth clearing for cleanliness.
 - [ ] **Location-autocomplete fill still not working.** Detection is correct (routes to a
@@ -863,9 +998,9 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       through `chooseOption()` at all.)
 - [ ] **Cover-letter generation isn't wired into `index.mjs`.** `renderLatex()` exists and
       is real, but `cover_letter_*` fields currently route to manual review.
-- [ ] **Only tested on one ATS (Lever), two companies (PointClickCare, Epoch AI).**
-      Everything platform-specific in the Phase 4 fixes is Lever-shaped and unverified
-      elsewhere.
+- [ ] **Phase 4 tested live on two ATSes only:** Lever (PointClickCare, Epoch AI) and,
+      since 2026-09-19, Greenhouse (Anthropic). Ashby apply is unverified, and each
+      platform has only one or two real forms behind it.
 - [ ] **Workday step-detection conflict.** `step-detect.mjs` has real Workday-shaped
       signatures, but the README says Workday `/apply` isn't implemented. Don't assume it
       works — may be partial scaffolding.
@@ -873,15 +1008,13 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       platforms require a login before applying.
 - [ ] **`claude-in-chrome`'s role is unclear** now that Phase 4 is code-driven and invoked
       via `capply` without Claude Code at all. May not be needed.
-- [ ] **`cv.md` and `candidate-profile.yml` are still templates.** Real data needed before
-      either phase produces meaningful output. (This is why every Phase 2 score has been
-      low/skip — expected, not a bug.)
+- [x] ~~`cv.md` and `candidate-profile.yml` are still templates.~~ **Resolved
+      2026-09-03** — both hold real data (see the personal-data item above).
 - [ ] Confirm the 5/day Routine cap stays comfortable alongside normal interactive Claude
       Code usage.
-- [ ] **Real per-call cost measured: $0.11 for one offer, cache miss.** Still need a
-      same-day repeat run for a real `cache_read` repeat-call cost. The 2026-08-26 batch
-      call (17 offers, one call) is a second data point worth pulling from its logged
-      `[usage]` line.
+- [ ] **Real per-call cost measured: $0.11 for one offer, cache miss** (Phase 2 — only
+      relevant if scoring is re-enabled). Still need a same-day repeat run for a real
+      `cache_read` repeat-call cost.
 
 ---
 

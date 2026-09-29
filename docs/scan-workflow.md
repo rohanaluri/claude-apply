@@ -34,9 +34,13 @@ A URL that doesn't match these patterns is skipped silently. To add a new ATS, s
 
 Aggregators are **company-agnostic**: they query a curated set of public boards in a single call, so you don't have to add each company to `portals.yml`. They run alongside the per-company ATS scan, share the same `title_filter` / `target_locations` / dedup pipeline, and write to the same `pipeline.md`.
 
-| Aggregator   | Endpoint                                  | Default boards                                                                     |
-| ------------ | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `greenhouse` | `https://boards-api.greenhouse.io/v1/...` | `src/scan/aggregators/known-greenhouse-boards.json` (~20 well-known public boards) |
+| Aggregator   | Endpoint                                  | Default boards                                                      |
+| ------------ | ----------------------------------------- | ------------------------------------------------------------------- |
+| `greenhouse` | `https://boards-api.greenhouse.io/v1/...` | `src/scan/aggregators/known-greenhouse-boards.json` (172 companies) |
+| `lever`      | `https://api.lever.co/v0/postings/...`    | `src/scan/aggregators/known-lever-boards.json` (81 companies)       |
+| `ashby`      | `https://api.ashbyhq.com/posting-api/...` | `src/scan/aggregators/known-ashby-boards.json` (211 companies)      |
+
+Each bundled list is a curated top-250 selection for that platform, minus companies whose board no longer exists on it (HTTP 404), stored in rank order as `{ slug, company }` entries. The aggregator shuffles the order on every run. To trim or grow the set, edit the JSON file, or override it per aggregator with `boards:` in `portals.yml`.
 
 `simplify.jobs` was the original target but its Terms of Service forbid automated scraping. We document the blocker and ship the Greenhouse aggregator instead — it uses the same unauthenticated public API that Greenhouse already exposes for board embedding, so there's no ToS conflict.
 

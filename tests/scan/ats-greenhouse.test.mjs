@@ -49,3 +49,15 @@ test('fetchGreenhouse — mappe fixture, body via stripHtml', async () => {
     assert.equal(o.platform, 'greenhouse');
   }
 });
+
+test('fetchGreenhouse — posted_at vient de first_published (pas updated_at), "" si absent', async () => {
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  restore = installMockFetch({
+    'https://boards-api.greenhouse.io/v1/boards/anthropic/jobs?content=true': fixture,
+  });
+
+  const offers = await fetchGreenhouse('anthropic', 'Anthropic');
+
+  assert.equal(offers[0].posted_at, '2026-09-03T17:30:34.000Z');
+  assert.equal(offers[1].posted_at, '');
+});

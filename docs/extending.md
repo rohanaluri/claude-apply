@@ -30,7 +30,7 @@ export async function fetchWorkable(slug, companyName)  // → Offer[]
 export async function verifySlug(slug)                  // → { ok, count } | { ok, status, reason }
 ```
 
-The `Offer` shape: `{ url, title, company, location, body, platform }`. `body` may be empty. See `src/scan/ats/workable.mjs` for the complete reference implementation.
+The `Offer` shape: `{ url, title, company, location, body, platform, posted_at }`. `body` may be empty. `posted_at` is the ISO-8601 date the job was **first** published (not last edited), or `''` if the ATS doesn't expose one — the digest uses it for its freshness window and newest-first ordering; normalize it with `normalizePostedAt()` from `src/lib/posted-at.mjs`. See `src/scan/ats/workable.mjs` for the complete reference implementation.
 
 Use `User-Agent: 'claude-apply-scan/1.0'` in `fetchX` and `'claude-apply-verify/1.0'` in `verifySlug`. Throw a typed error on non-2xx: `new Error(\`Workable API ${slug}: HTTP ${res.status}\`)`.
 

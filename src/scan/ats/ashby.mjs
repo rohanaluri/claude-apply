@@ -1,5 +1,8 @@
 // Fetcher for Ashby-hosted job boards.
 // Endpoint: GET https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=false
+// `posted_at` comes from `publishedAt`.
+
+import { normalizePostedAt } from '../../lib/posted-at.mjs';
 
 // `includeBody` (default true, unchanged for every existing caller): Ashby's
 // API always sends descriptionPlain regardless of any request param, so
@@ -7,10 +10,11 @@
 // false }` still drops the text from the returned offer object, so it
 // isn't retained across a long-running scan. Added 2026-09-20 for the
 // aggregator, same reasoning as fetchGreenhouse's includeBody.
-export async function fetchAshby(slug, companyName, { includeBody = true } = {}) {
+export async function fetchAshby(slug, companyName, { includeBody = true, signal } = {}) {
   const url = `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=false`;
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'claude-apply-scan/1.0' },
+    signal,
   });
   if (!res.ok) {
     throw new Error(`Ashby API ${slug}: HTTP ${res.status}`);
@@ -23,6 +27,7 @@ export async function fetchAshby(slug, companyName, { includeBody = true } = {})
     company: companyName,
     location: j.location || '',
     body: includeBody ? j.descriptionPlain || '' : '',
+    posted_at: normalizePostedAt(j.publishedAt),
     platform: 'ashby',
   }));
 }

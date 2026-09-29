@@ -130,6 +130,13 @@ target_locations:
   - USA
 digest_sheet_id: '1G1SXo_Xac0meQueYGLfl04nYxcRrPHHJ6W5_-uqktQc'
 
+# Which unseen jobs the daily digest actually sends (null disables a rule).
+digest_limits:
+  max_posting_age_days: 14 # ignore jobs first posted longer ago than this
+  per_company_per_day: 3 # newest postings win the slots
+  window_days: 30 # rolling window for the cap below
+  per_company_per_window: 10
+
 # --- Application-preference fields ---
 relocation_flexible: true
 preferred_hours_per_week: 40 # assumed standard full-time — flag if this isn't right

@@ -28,6 +28,7 @@ test('writeTodaysOffers puis readTodaysOffers — round-trip', () => {
       company: 'Acme',
       location: 'Remote',
       platform: 'lever',
+      posted_at: '2026-09-17T12:00:00.000Z',
     },
   ];
   writeTodaysOffers(filePath, { date: '2026-09-18', offers });
@@ -35,6 +36,7 @@ test('writeTodaysOffers puis readTodaysOffers — round-trip', () => {
   assert.equal(result.date, '2026-09-18');
   assert.equal(result.offers.length, 1);
   assert.equal(result.offers[0].apply_url, 'https://jobs.lever.co/acme/1/apply');
+  assert.equal(result.offers[0].posted_at, '2026-09-17T12:00:00.000Z');
 });
 
 test('writeTodaysOffers — remplit les champs manquants avec des chaînes vides', () => {
@@ -48,6 +50,7 @@ test('writeTodaysOffers — remplit les champs manquants avec des chaînes vides
     company: '',
     location: '',
     platform: '',
+    posted_at: '',
   });
 });
 

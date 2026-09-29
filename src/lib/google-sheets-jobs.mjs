@@ -49,14 +49,20 @@ export class JobsTabReadError extends Error {
   }
 }
 
-// Reads every existing `url` value from the Jobs tab, so the caller can
-// treat "already in the sheet" as "already sent, don't re-send". Throws
-// JobsTabReadError on ANY failure (auth, network, missing tab, bad range) —
-// callers MUST treat that as fatal for the run rather than falling back to
-// an empty set, otherwise a transient Sheets hiccup would silently
-// re-send every job that was ever found. See Decision (2026-09-18) in
+const DATE_FOUND_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('date_found'); // 0
+const COMPANY_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('company'); // 1
+
+// Reads the Jobs tab once and returns:
+//   - `urls`: every existing `url`, so the caller can treat "already in the
+//     sheet" as "already sent, don't re-send".
+//   - `history`: `{ dateFound, company }` for every row with a YYYY-MM-DD
+//     date_found, so the caller can enforce per-company limits across days.
+// Throws JobsTabReadError on ANY failure (auth, network, missing tab, bad
+// range) — callers MUST treat that as fatal for the run rather than falling
+// back to an empty set, otherwise a transient Sheets hiccup would silently
+// re-send every job that was ever found. See Decision #30 in
 // pipeline-architecture.md.
-export async function readJobsUrls({ sheetsClient, sheetId, sheetName }) {
+export async function readJobsTab({ sheetsClient, sheetId, sheetName }) {
   let res;
   try {
     res = await sheetsClient.spreadsheets.values.get({
@@ -70,17 +76,23 @@ export async function readJobsUrls({ sheetsClient, sheetId, sheetName }) {
   }
 
   const rows = res?.data?.values || [];
-  const seen = new Set();
+  const urls = new Set();
+  const history = [];
   // Skip row 1 (header) unconditionally — even if the sheet is somehow
   // headerless, treating row 1 as data would only ever cost one false
   // "already seen" URL, never a false negative.
   for (const row of rows.slice(1)) {
     const url = row?.[URL_COLUMN_INDEX];
     if (typeof url === 'string' && url.trim()) {
-      seen.add(url.trim());
+      urls.add(url.trim());
+    }
+    const dateFound = String(row?.[DATE_FOUND_COLUMN_INDEX] ?? '').trim();
+    const company = String(row?.[COMPANY_COLUMN_INDEX] ?? '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateFound) && company) {
+      history.push({ dateFound, company });
     }
   }
-  return seen;
+  return { urls, history };
 }
 
 // offer -> an A:I row, in JOBS_TAB_COLUMNS order minus `capply_command`

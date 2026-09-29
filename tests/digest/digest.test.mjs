@@ -5,6 +5,7 @@ import {
   topCompanies,
   buildJobsTabUrl,
   buildDigestHtml,
+  heldBackHtml,
   appendDigestRow,
 } from '../../src/digest/index.mjs';
 
@@ -95,4 +96,19 @@ test('appendDigestRow — un seul append, plage A:D, valeurs dans l’ordre atte
   assert.deepEqual(calls[0].requestBody.values, [
     ['2026-09-18', 'Job Digest — 2026-09-18 — 3 new roles', 3, '<div>...</div>'],
   ]);
+});
+
+test('heldBackHtml — vide si rien n’est retenu', () => {
+  assert.equal(heldBackHtml(null), '');
+  assert.equal(heldBackHtml({ stale: 0, heldByDailyCap: 0, heldByWindowCap: 0 }), '');
+});
+
+test('buildDigestHtml — mentionne les offres retenues par la fenêtre et les plafonds', () => {
+  const html = buildDigestHtml({
+    today: '2026-09-29',
+    newJobs: [],
+    jobsTabUrl: 'https://x',
+    heldBack: { stale: 4, heldByDailyCap: 2, heldByWindowCap: 1 },
+  });
+  assert.ok(html.includes('Held back: 4 posted too long ago, 3 over a per-company limit.'));
 });

@@ -97,3 +97,15 @@ min_start_date: '2026-08-24'
 # digest_sheet_name: Digest
 # jobs_sheet_name: Jobs
 # jobs_sheet_gid: 0
+#
+# Which unseen jobs the digest sends each run (these are the defaults; set a
+# rule to null to disable it). Jobs first posted more than
+# max_posting_age_days ago are skipped; the rest go newest-first, at most
+# per_company_per_day per company per day and per_company_per_window per
+# company in any rolling window_days. Held-back jobs aren't recorded, so
+# they can still be sent on a later run while fresh enough.
+# digest_limits:
+#   max_posting_age_days: 14
+#   per_company_per_day: 3
+#   window_days: 30
+#   per_company_per_window: 10

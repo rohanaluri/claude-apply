@@ -23,6 +23,7 @@ export function writeTodaysOffers(filePath, { date, offers }) {
       company: o.company || '',
       location: o.location || '',
       platform: o.platform || o._resultPlatform || '',
+      posted_at: o.posted_at || '',
     })),
   };
   const tmp = `${filePath}.tmp`;

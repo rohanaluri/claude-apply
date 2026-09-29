@@ -269,3 +269,47 @@ test('validateProfile rejects profile without cv_path', () => {
   assert.equal(ok, false);
   assert.ok(errors.some((e) => e.includes('cv_path')));
 });
+
+const DIGEST_BASE = {
+  first_name: 'Alice',
+  last_name: 'Martin',
+  email: 'alice@example.com',
+  phone: '+33600000000',
+  linkedin_url: 'https://linkedin.com/in/a',
+  github_url: 'https://github.com/a',
+  city: 'Paris',
+  country: 'France',
+  school: 'S',
+  degree: 'D',
+  graduation_year: 2026,
+  work_authorization: 'EU',
+  requires_sponsorship: false,
+  availability_start: '2026-09-01',
+  cv_path: 'a.pdf',
+  auto_apply_min_score: 8,
+};
+
+test('validateProfile accepts digest_limits with integers and null', () => {
+  const { ok, errors } = validateProfile({
+    ...DIGEST_BASE,
+    digest_limits: {
+      max_posting_age_days: 14,
+      per_company_per_day: 3,
+      per_company_per_window: null,
+    },
+  });
+  assert.equal(ok, true, `errors: ${JSON.stringify(errors)}`);
+});
+
+test('validateProfile rejects digest_limits with an unknown key or a bad value', () => {
+  for (const digest_limits of [
+    { per_company_per_days: 3 },
+    { per_company_per_day: -1 },
+    { window_days: '30' },
+    [3],
+  ]) {
+    const { ok, errors } = validateProfile({ ...DIGEST_BASE, digest_limits });
+    assert.equal(ok, false, JSON.stringify(digest_limits));
+    assert.ok(errors.some((e) => e.includes('digest_limits')));
+  }
+});

@@ -16,6 +16,9 @@
 // with an empty "seen" set would re-send every job ever found. See
 // src/lib/google-sheets-jobs.mjs.
 //
+// Between the dedupe and the append, select-jobs.mjs applies the freshness
+// window and per-company limits (`digest_limits` in candidate-profile.yml).
+//
 // A digest row is written every run, even with 0 new jobs — a missing
 // email should mean something broke, not "nothing new today".
 //
@@ -38,7 +41,8 @@
 // Routine). The service account's email (inside that JSON key) must be
 // shared on the target Sheet as an Editor.
 //
-// --dry-run prints what WOULD be written to both tabs; writes nothing.
+// --dry-run prints what WOULD be written to both tabs; writes nothing. It
+// skips the Jobs tab read, so limits are applied as if the tab were empty.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -46,7 +50,8 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { google } from 'googleapis';
 import { readTodaysOffers } from '../lib/todays-offers.mjs';
-import { readJobsUrls, appendJobsRows, JobsTabReadError } from '../lib/google-sheets-jobs.mjs';
+import { readJobsTab, appendJobsRows, JobsTabReadError } from '../lib/google-sheets-jobs.mjs';
+import { resolveDigestLimits, selectJobs } from './select-jobs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,11 +72,14 @@ function printHelp() {
   console.log(`Usage: node src/digest/index.mjs [options]
 
 Reads today's scan output (data/todays-offers.json), drops anything already
-in the Jobs tab, appends the rest there, and sends a summary email via a row
-in the Digest tab (Zapier watches that tab: New Spreadsheet Row -> Gmail).
+in the Jobs tab, applies the freshness window and per-company limits
+(digest_limits in candidate-profile.yml), appends the rest there, and sends a
+summary email via a row in the Digest tab (Zapier watches that tab: New
+Spreadsheet Row -> Gmail).
 
 Flags:
-  --dry-run             Print what would be written; write nothing.
+  --dry-run             Print what would be written; write nothing. Skips the
+                        Jobs tab read (limits applied as if it were empty).
   --sheet-id <id>       Override the target Google Sheet ID for this run.
   --sheet-name <name>   Override the Digest tab name (default 'Digest').
   --jobs-sheet-name <n> Override the Jobs tab name (default 'Jobs').
@@ -120,12 +128,25 @@ export function buildJobsTabUrl(sheetId, jobsSheetGid) {
   return jobsSheetGid != null ? `${base}#gid=${jobsSheetGid}` : base;
 }
 
+// One muted line saying how many unseen matches the limits held back, so a
+// short digest isn't mistaken for a quiet day. Empty when nothing was held.
+export function heldBackHtml(heldBack) {
+  if (!heldBack) return '';
+  const parts = [];
+  if (heldBack.stale > 0) parts.push(`${heldBack.stale} posted too long ago`);
+  const capped = (heldBack.heldByDailyCap || 0) + (heldBack.heldByWindowCap || 0);
+  if (capped > 0) parts.push(`${capped} over a per-company limit`);
+  if (parts.length === 0) return '';
+  return `<p style="margin: 0 0 16px; font-size: 13px; color: #777;">Held back: ${parts.join(', ')}.</p>`;
+}
+
 // Summary-only HTML — no per-job cards (those live in the Jobs tab now).
 // Mirrors the styling of the earlier score-based digest (dark title bar,
 // light card) so it still renders cleanly; Gmail Zap action's Body type
 // must stay set to HTML, not Plain.
-export function buildDigestHtml({ today, newJobs, jobsTabUrl }) {
+export function buildDigestHtml({ today, newJobs, jobsTabUrl, heldBack = null }) {
   const count = newJobs.length;
+  const heldHtml = heldBackHtml(heldBack);
   const breakdown = platformBreakdown(newJobs);
   const companies = topCompanies(newJobs);
 
@@ -152,6 +173,7 @@ export function buildDigestHtml({ today, newJobs, jobsTabUrl }) {
   <p style="margin: 0 0 16px; font-size: 15px; color: #555;">
     ${count} new role${count === 1 ? '' : 's'} found today.
   </p>
+  ${heldHtml}
   <h2 style="margin: 0 0 4px; font-size: 16px; color: #1a1a1a;">By platform</h2>
   ${breakdownHtml}
   ${companiesHtml}
@@ -192,6 +214,17 @@ export async function appendDigestRow({ sheetsClient, sheetId, sheetName, row })
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [row] },
   });
+}
+
+function digestSubject(today, count) {
+  return `Job Digest — ${today} — ${count} new role${count === 1 ? '' : 's'}`;
+}
+
+function logSelection(inCount, outCount, { stale, heldByDailyCap, heldByWindowCap }) {
+  console.error(
+    `[digest] ${outCount} of ${inCount} selected (${stale} older than the freshness window, ` +
+      `${heldByDailyCap} over the per-company daily cap, ${heldByWindowCap} over the rolling cap).`
+  );
 }
 
 async function main() {
@@ -237,24 +270,21 @@ async function main() {
   }
 
   const jobsTabUrl = buildJobsTabUrl(sheetId, profile.jobs_sheet_gid);
+  const limits = resolveDigestLimits(profile.digest_limits);
 
   if (flags.dryRun) {
     console.error(
       '[digest] --dry-run: reading the Jobs tab is skipped; assuming all offers are new.'
     );
-    const html = buildDigestHtml({ today, newJobs: candidateOffers, jobsTabUrl });
-    const subject = `Job Digest — ${today} — ${candidateOffers.length} new role${candidateOffers.length === 1 ? '' : 's'}`;
-    console.error(
-      `[digest] --- Jobs tab rows that WOULD be appended (${candidateOffers.length}) ---`
-    );
-    console.log(JSON.stringify(candidateOffers, null, 2));
+    const { selected, ...heldBack } = selectJobs(candidateOffers, { limits });
+    logSelection(candidateOffers.length, selected.length, heldBack);
+    const html = buildDigestHtml({ today, newJobs: selected, jobsTabUrl, heldBack });
+    const subject = digestSubject(today, selected.length);
+    console.error(`[digest] --- Jobs tab rows that WOULD be appended (${selected.length}) ---`);
+    console.log(JSON.stringify(selected, null, 2));
     console.error('\n[digest] --- Digest row that WOULD be appended ---\n');
     console.log(
-      JSON.stringify(
-        { date: today, subject, job_count: candidateOffers.length, body: html },
-        null,
-        2
-      )
+      JSON.stringify({ date: today, subject, job_count: selected.length, body: html }, null, 2)
     );
     return;
   }
@@ -274,8 +304,13 @@ async function main() {
   // Fail closed: if we can't confirm what's already in the Jobs tab, we
   // must not guess (an empty seen-set would re-send every job ever found).
   let seenUrls;
+  let history;
   try {
-    seenUrls = await readJobsUrls({ sheetsClient, sheetId, sheetName: jobsSheetName });
+    ({ urls: seenUrls, history } = await readJobsTab({
+      sheetsClient,
+      sheetId,
+      sheetName: jobsSheetName,
+    }));
   } catch (err) {
     if (err instanceof JobsTabReadError) {
       console.error(`[digest] ${err.message}`);
@@ -287,10 +322,12 @@ async function main() {
     throw err;
   }
 
-  const newJobs = candidateOffers.filter((o) => o.url && !seenUrls.has(o.url));
+  const unseen = candidateOffers.filter((o) => o.url && !seenUrls.has(o.url));
   console.error(
-    `[digest] ${candidateOffers.length} candidate(s), ${newJobs.length} not already in the "${jobsSheetName}" tab.`
+    `[digest] ${candidateOffers.length} candidate(s), ${unseen.length} not already in the "${jobsSheetName}" tab.`
   );
+  const { selected: newJobs, ...heldBack } = selectJobs(unseen, { history, limits });
+  logSelection(unseen.length, newJobs.length, heldBack);
 
   try {
     const { appended } = await appendJobsRows({
@@ -309,8 +346,8 @@ async function main() {
     process.exit(3);
   }
 
-  const html = buildDigestHtml({ today, newJobs, jobsTabUrl });
-  const subject = `Job Digest — ${today} — ${newJobs.length} new role${newJobs.length === 1 ? '' : 's'}`;
+  const html = buildDigestHtml({ today, newJobs, jobsTabUrl, heldBack });
+  const subject = digestSubject(today, newJobs.length);
   const row = [today, subject, newJobs.length, html];
 
   try {

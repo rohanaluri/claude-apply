@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  readJobsUrls,
+  readJobsTab,
   appendJobsRows,
   JobsTabReadError,
   JOBS_TAB_COLUMNS,
@@ -39,7 +39,7 @@ test('JOBS_TAB_COLUMNS — ordre confirmé avec Rohan (2026-09-18)', () => {
   ]);
 });
 
-test('readJobsUrls — extrait la colonne url (index 4), ignore la ligne d’en-tête', async () => {
+test('readJobsTab — extrait la colonne url (index 4), ignore la ligne d’en-tête', async () => {
   const client = fakeSheetsClient({
     getValues: [
       ['date_found', 'company', 'title', 'location', 'url', 'platform', 'apply_url', '', '', ''],
@@ -69,22 +69,30 @@ test('readJobsUrls — extrait la colonne url (index 4), ignore la ligne d’en-
       ],
     ],
   });
-  const urls = await readJobsUrls({ sheetsClient: client, sheetId: 'sheet123', sheetName: 'Jobs' });
+  const { urls } = await readJobsTab({
+    sheetsClient: client,
+    sheetId: 'sheet123',
+    sheetName: 'Jobs',
+  });
   assert.ok(urls.has('https://jobs.lever.co/acme/1'));
   assert.ok(urls.has('https://jobs.lever.co/beta/2'));
   assert.equal(urls.size, 2);
 });
 
-test('readJobsUrls — feuille vide (juste l’en-tête, ou totalement vide) renvoie un Set vide', async () => {
+test('readJobsTab — feuille vide (juste l’en-tête, ou totalement vide) renvoie un Set vide', async () => {
   const client = fakeSheetsClient({ getValues: [] });
-  const urls = await readJobsUrls({ sheetsClient: client, sheetId: 'sheet123', sheetName: 'Jobs' });
+  const { urls } = await readJobsTab({
+    sheetsClient: client,
+    sheetId: 'sheet123',
+    sheetName: 'Jobs',
+  });
   assert.equal(urls.size, 0);
 });
 
-test('readJobsUrls — échoue de façon explicite (JobsTabReadError) si l’appel Sheets échoue', async () => {
+test('readJobsTab — échoue de façon explicite (JobsTabReadError) si l’appel Sheets échoue', async () => {
   const client = fakeSheetsClient({ getError: new Error('permission denied') });
   await assert.rejects(
-    () => readJobsUrls({ sheetsClient: client, sheetId: 'sheet123', sheetName: 'Jobs' }),
+    () => readJobsTab({ sheetsClient: client, sheetId: 'sheet123', sheetName: 'Jobs' }),
     JobsTabReadError
   );
 });
@@ -168,4 +176,34 @@ test('appendJobsRows — un seul appel batch, colonnes A:I seulement (capply_com
   for (const row of appendCalls[0].requestBody.values) {
     assert.equal(row.length, 9);
   }
+});
+
+test('readJobsTab — renvoie les urls et l’historique { dateFound, company } des lignes datées', async () => {
+  const client = fakeSheetsClient({
+    getValues: [
+      ['date_found', 'company', 'title', 'location', 'url'],
+      ['2026-09-28', 'Acme', 'Analyst', 'Remote', 'https://x/1'],
+      ['2026-09-29', ' Beta ', 'Engineer', 'NYC', 'https://x/2'],
+      ['not a date', 'Gamma', 'Engineer', 'NYC', 'https://x/3'],
+      ['2026-09-29', '', 'Engineer', 'NYC', 'https://x/4'],
+    ],
+  });
+  const { urls, history } = await readJobsTab({
+    sheetsClient: client,
+    sheetId: 'sheet123',
+    sheetName: 'Jobs',
+  });
+  assert.equal(urls.size, 4);
+  assert.deepEqual(history, [
+    { dateFound: '2026-09-28', company: 'Acme' },
+    { dateFound: '2026-09-29', company: 'Beta' },
+  ]);
+});
+
+test('readJobsTab — échoue de façon explicite (JobsTabReadError) si l’appel Sheets échoue', async () => {
+  const client = fakeSheetsClient({ getError: new Error('quota') });
+  await assert.rejects(
+    () => readJobsTab({ sheetsClient: client, sheetId: 'sheet123', sheetName: 'Jobs' }),
+    JobsTabReadError
+  );
 });

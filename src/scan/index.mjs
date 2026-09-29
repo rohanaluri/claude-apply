@@ -86,9 +86,9 @@ const DEFAULT_KNOWN_BOARDS = {
 // aggregator also logs its own "[lever aggregator] N/M boards checked"
 // lines every 100 boards (useful when debugging one aggregator in
 // isolation); this is the coarser, combined total across all of them run
-// this scan, printed every 1,000 boards so a full ~15k-board run doesn't
-// spam the terminal.
-const COMBINED_PROGRESS_MILESTONE = 1000;
+// this scan, printed every 100 boards (plus once at the end) so the
+// terminal isn't spammed.
+const COMBINED_PROGRESS_MILESTONE = 100;
 
 const VALID_SOURCES = new Set(['ats', 'aggregator', 'all']);
 
@@ -96,7 +96,9 @@ async function fetchAggregatorOffers(aggregatorsConfig, titleFilter = null) {
   const results = [];
   if (!aggregatorsConfig || typeof aggregatorsConfig !== 'object') return results;
 
-  const enabled = Object.entries(aggregatorsConfig).filter(([, cfg]) => cfg && cfg.enabled !== false);
+  const enabled = Object.entries(aggregatorsConfig).filter(
+    ([, cfg]) => cfg && cfg.enabled !== false
+  );
 
   // Total boards across every enabled aggregator, known up front, so the
   // combined counter can print "N/total" rather than just "N so far".
@@ -112,7 +114,10 @@ async function fetchAggregatorOffers(aggregatorsConfig, titleFilter = null) {
   const startedAt = Date.now();
   const onProgress = () => {
     combinedCompleted++;
-    if (combinedCompleted % COMBINED_PROGRESS_MILESTONE === 0 || combinedCompleted === totalBoards) {
+    if (
+      combinedCompleted % COMBINED_PROGRESS_MILESTONE === 0 ||
+      combinedCompleted === totalBoards
+    ) {
       const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(0);
       process.stderr.write(
         `[scan] ${combinedCompleted.toLocaleString()}/${totalBoards.toLocaleString()} boards checked (${elapsedSec}s elapsed)\n`
@@ -197,7 +202,6 @@ async function fetchCompanyOffers(company) {
   if (!fn) {
     return { company: company.name, platform: det.platform, offers: [], error: 'no fetcher' };
   }
-  const opts = undefined;
 
   let lastError = null;
   // Retry once on transient network errors (e.g. "fetch failed" from concurrent
@@ -205,7 +209,7 @@ async function fetchCompanyOffers(company) {
   // slowing the happy path.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const raw = opts ? await fn(det.slug, company.name, opts) : await fn(det.slug, company.name);
+      const raw = await fn(det.slug, company.name);
       const offers = Array.isArray(raw) ? raw : raw.offers;
       const fetchWarnings = Array.isArray(raw) ? [] : raw.warnings || [];
       return { company: company.name, platform: det.platform, offers, fetchWarnings, error: null };
@@ -234,7 +238,6 @@ export async function runScan(opts) {
     filteredPath,
     applicationsPath,
     filterStatePath = null,
-    cvMarkdown = null,
     dryRun = false,
     onlySlug = null,
     onProgress = null,
@@ -310,7 +313,7 @@ export async function runScan(opts) {
   const today = new Date().toISOString().slice(0, 10);
   const doc = dryRun ? { header: '', sections: [] } : readPipelineMd(pipelinePath);
 
-  const candidates = []; // Layer 1 survivors — ranked in Layer 2 before writing
+  const candidates = []; // prefilter + dedup survivors, written after the loop
   const added = [];
   const errors = [];
   const filtered = {
@@ -328,7 +331,7 @@ export async function runScan(opts) {
   const perCompany = [];
   let progressIndex = 0;
 
-  // ── Layer 1: regex prefilter + dedup (all sources, no early stop) ──
+  // ── Regex prefilter + dedup (all sources, no early stop) ──
   for (const result of fetchResults) {
     if (result.error) {
       errors.push({ company: result.company, error: result.error });
@@ -449,9 +452,6 @@ export async function runScan(opts) {
       seen.add(offer.url);
       seenRoles.add(roleKey);
 
-      // Collect candidate — don't write to pipeline.md yet. Layer 2
-      // (embedding similarity) ranks all candidates after this loop,
-      // and only the top N get written.
       candidates.push({ ...offer, _resultPlatform: result.platform });
       companyNew++;
     }
@@ -486,16 +486,10 @@ export async function runScan(opts) {
     }
   }
 
-  // ── Layer 2 removed (Decision: drop the top-10 cutoff + embedding rank,
-  // 2026-09-18) ── every Layer 1 survivor now goes through; nothing is
-  // silently dropped. `rankBySimilarity`/embed-ranker.mjs stays in the repo
-  // for anyone who wants to re-enable ranking later, it's just not called
-  // from here anymore.
-  const winners = candidates;
-  const rankingInfo = null;
-
-  // ── Write winners to pipeline.md + scan-history ──
-  for (const offer of winners) {
+  // ── Write survivors to pipeline.md + scan-history ──
+  // No ranking or top-N cutoff here: the digest decides what's actually
+  // sent (src/digest/select-jobs.mjs).
+  for (const offer of candidates) {
     added.push(offer);
     appendOffer(doc, offer);
     if (!dryRun) {
@@ -531,7 +525,6 @@ export async function runScan(opts) {
     filtered,
     added,
     candidates: candidates.length,
-    rankingInfo,
     errors,
     historyWrites,
     filteredWrites,
@@ -635,7 +628,8 @@ Flags:
   --source <ats|aggregator|all>
                            Where to look for offers. Default "ats" scans
                            tracked_companies as before. "aggregator" queries
-                           the public Greenhouse aggregator (no per-company
+                           the Greenhouse, Lever and Ashby aggregators
+                           (curated company lists, no per-company
                            portals.yml entry needed). "all" runs both.
   --help, -h               Show this help and exit.
 
@@ -685,12 +679,11 @@ async function main() {
 
   const yaml = await import('js-yaml');
   const portalsConfig = yaml.load(fs.readFileSync(portalsPath, 'utf8'));
-  const { profile, cvMarkdown } = await loadProfile(CONFIG_DIR);
+  const { profile } = await loadProfile(CONFIG_DIR);
 
   const result = await runScan({
     portalsConfig,
     profile,
-    cvMarkdown,
     pipelinePath: path.join(DATA_DIR, 'pipeline.md'),
     historyPath: path.join(DATA_DIR, 'scan-history.tsv'),
     filteredPath: path.join(DATA_DIR, 'filtered-out.tsv'),
