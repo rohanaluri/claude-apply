@@ -10,6 +10,11 @@ const test_norm = (pattern, label, name) => {
   return pattern.test(combined);
 };
 
+const asksAboutNeedingSponsorship = (label) =>
+  test_norm(/sponsor/, label, '') &&
+  test_norm(/requir|need/, label, '') &&
+  !test_norm(/without/, label, '');
+
 const RULES = [
   {
     key: 'cover_letter_upload',
@@ -119,6 +124,12 @@ const RULES = [
   // authorization/sponsorship questions as "...for our Company?", which the broad
   // experience_company regex (/company|employer|.../ ) matched first, silently
   // misclassifying two required work-authorization questions as job-history fields.
+  // A question asking whether you'll *require/need* sponsorship is the
+  // sponsorship question even when it mentions work authorization — e.g.
+  // Snowflake's "Will you require company sponsorship … to maintain or extend
+  // your current work authorization status?", which was answered "Yes" as
+  // work_auth (2026-09-29). "…authorized to work WITHOUT sponsorship?" stays
+  // work_auth.
   {
     key: 'work_auth',
     when: (f) =>
@@ -126,7 +137,7 @@ const RULES = [
         /work auth|authorized to work|right to work|eligible.*work|autorisation.*travail/,
         f.label,
         f.name
-      ),
+      ) && !asksAboutNeedingSponsorship(f.label),
   },
   // A follow-up like "If so, please describe your current visa status" is a
   // free-text detail box, not the sponsorship question itself — filling the

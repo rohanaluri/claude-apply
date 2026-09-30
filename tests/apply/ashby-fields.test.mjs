@@ -101,3 +101,30 @@ test('Ashby Yes/No — an unrecognized question goes to the AI with the real Yes
   assert.equal(plan.action, 'ai-choice');
   assert.deepEqual(plan.options, ['Yes', 'No']);
 });
+
+test('classifyField — "require sponsorship … work authorization status" is sponsorship, not work_auth', () => {
+  // Seen live on Snowflake's Ashby form, where it was wrongly answered "Yes" as work_auth.
+  assert.equal(
+    classifyField(
+      text(
+        'Will you require company sponsorship now or in the future to maintain or extend your current work authorization status?'
+      )
+    ),
+    'sponsorship'
+  );
+  assert.equal(
+    classifyField(text('Will you need sponsorship to be eligible to work in the US?')),
+    'sponsorship'
+  );
+});
+
+test('classifyField — work authorization questions stay work_auth', () => {
+  for (const q of [
+    'Are you authorized to work in the country where the job is located?',
+    'For Snowflake to anticipate possible immigration timelines and obligations, could you confirm you are currently authorized to work in the country to which you are applying?',
+    'Are you legally authorized to work in the United States without requiring sponsorship?',
+    'Are you eligible to work in the US without the need for visa sponsorship?',
+  ]) {
+    assert.equal(classifyField(text(q)), 'work_auth', q);
+  }
+});

@@ -375,6 +375,15 @@ repeating it.
     the queue, statuses written to the right rows); a dry-run queue over real Lever,
     Greenhouse-embed and Ashby jobs; the `.bat` run through `cmd.exe` → WSL against the
     real sheet (empty queue → clean exit); the dropdown/colors applied to the real sheet.
+    **First real queue run (2026-09-29):** 3/3 jobs filled and marked `applied` —
+    Lever 15 filled / 1 review, Ashby 16 / 4, Greenhouse (Coinbase, a long form with
+    many React-Select dropdowns) 18 / 36. It surfaced a wrong answer: Snowflake's "Will
+    you require company sponsorship … to maintain or extend your current work
+    authorization status?" matched `work_auth` (via "work auth") and was answered "Yes"
+    — i.e. "needs sponsorship". `work_auth` now excludes questions asking whether you
+    *require/need* sponsorship (unless they say "without"), so they fall through to
+    `sponsorship`. Re-checked on all 7 live forms used so far: every sponsorship
+    question → No, every authorization question → Yes.
 
 ---
 
