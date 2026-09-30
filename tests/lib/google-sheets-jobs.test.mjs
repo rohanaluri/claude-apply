@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   readJobsTab,
+  readApplyQueue,
+  setJobStatus,
   appendJobsRows,
   JobsTabReadError,
   JOBS_TAB_COLUMNS,
@@ -205,5 +207,98 @@ test('readJobsTab — échoue de façon explicite (JobsTabReadError) si l’appe
   await assert.rejects(
     () => readJobsTab({ sheetsClient: client, sheetId: 'sheet123', sheetName: 'Jobs' }),
     JobsTabReadError
+  );
+});
+
+const HEADER = [
+  'date_found',
+  'company',
+  'title',
+  'location',
+  'url',
+  'platform',
+  'apply_url',
+  'status',
+  'notes',
+];
+
+test('readApplyQueue — only rows with status "apply" (any case), with row numbers', async () => {
+  const client = fakeSheetsClient({
+    getValues: [
+      HEADER,
+      [
+        '2026-09-29',
+        'Acme',
+        'Data Analyst',
+        'NYC',
+        'https://x/1',
+        'lever',
+        'https://x/1/apply',
+        'apply',
+      ],
+      ['2026-09-29', 'Beta', 'Engineer', 'SF', 'https://x/2', 'ashby', '', 'applied'],
+      ['2026-09-29', 'Gamma', 'Scientist', 'LA', 'https://x/3', 'greenhouse', '', ' Apply '],
+      ['2026-09-29', 'Delta', 'Engineer', 'SF', 'https://x/4', 'ashby', ''],
+    ],
+  });
+  const queue = await readApplyQueue({ sheetsClient: client, sheetId: 's', sheetName: 'Jobs' });
+  assert.deepEqual(queue, [
+    {
+      row: 2,
+      url: 'https://x/1',
+      applyUrl: 'https://x/1/apply',
+      company: 'Acme',
+      title: 'Data Analyst',
+    },
+    { row: 4, url: 'https://x/3', applyUrl: '', company: 'Gamma', title: 'Scientist' },
+  ]);
+});
+
+test('setJobStatus — finds the row by url and writes only its status cell (column H)', async () => {
+  const updates = [];
+  const client = fakeSheetsClient({
+    getValues: [
+      HEADER,
+      ['2026-09-29', 'Beta', 'Engineer', 'SF', 'https://x/2', 'ashby', '', ''],
+      ['2026-09-29', 'Acme', 'Data Analyst', 'NYC', 'https://x/1', 'lever', '', 'apply'],
+    ],
+  });
+  client.spreadsheets.values.update = async (params) => {
+    updates.push(params);
+    return {};
+  };
+  const r = await setJobStatus({
+    sheetsClient: client,
+    sheetId: 's',
+    sheetName: 'Jobs',
+    url: 'https://x/1',
+    status: 'applied',
+  });
+  assert.deepEqual(r, { row: 3 });
+  assert.deepEqual(updates, [
+    {
+      spreadsheetId: 's',
+      range: 'Jobs!H3',
+      valueInputOption: 'RAW',
+      requestBody: { values: [['applied']] },
+    },
+  ]);
+});
+
+test('setJobStatus — throws if the url is no longer in the sheet', async () => {
+  const client = fakeSheetsClient({ getValues: [HEADER] });
+  client.spreadsheets.values.update = async () => {
+    throw new Error('must not write');
+  };
+  await assert.rejects(
+    () =>
+      setJobStatus({
+        sheetsClient: client,
+        sheetId: 's',
+        sheetName: 'Jobs',
+        url: 'https://x/9',
+        status: 'applied',
+      }),
+    /no row with url/
   );
 });

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `capply --queue` fills every Jobs-tab row whose status is `apply`, one Chrome tab per job, and sets each row to `applied` (filled) or `needs attention` (blocked/failed); nothing is submitted. `scripts/windows/capply-queue.bat` runs it from a Windows desktop shortcut via WSL.
+- `capply` starts the CDP Chrome itself (same profile and flags as the `chrome-apply` alias) when nothing is listening on the port (`src/apply/chrome-launcher.mjs`).
+- `scripts/setup-jobs-sheet.mjs` adds the Jobs tab's status dropdown (`apply` / `applied` / `needs attention` / `skip`) and colors (yellow / green / red); formatting only, safe to re-run.
 - Greenhouse, Lever and Ashby offers now carry `posted_at`, the ISO date the job was first published (Greenhouse `first_published`, not `updated_at`), via `normalizePostedAt()` in `src/lib/posted-at.mjs`.
 - `discoverCompany(name, options)` in `src/scan/discover-company.mjs` — smart slug discovery that walks platform-specific variations (`x`, `x-ai`, `xhq`, `xlabs`, `x-labs`, …) across Lever → Greenhouse → Ashby → Workday registry and returns the first hit. Resolutions are cached in `data/known-ats-slugs.json`. Closes #38: `/apply-onboard:companies` no longer drops the 17/37 companies (Doctolib, Cohere, Modal, Scale AI, Writer, OpenAI, …) that live under non-obvious slugs.
 - `npm run explain -- "<title>" [--company "<co>"]` CLI traces why a title is accepted or filtered by the current `portals.yml` + `candidate-profile.yml`.

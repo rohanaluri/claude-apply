@@ -49,6 +49,22 @@ export class JobsTabReadError extends Error {
   }
 }
 
+async function readJobsRows({ sheetsClient, sheetId, sheetName }) {
+  try {
+    const res = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${sheetName}!A:I`,
+    });
+    return res?.data?.values || [];
+  } catch (err) {
+    throw new JobsTabReadError(`Could not read the "${sheetName}" tab: ${err.message}`, {
+      cause: err,
+    });
+  }
+}
+
+const cell = (row, i) => String(row?.[i] ?? '').trim();
+
 const DATE_FOUND_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('date_found'); // 0
 const COMPANY_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('company'); // 1
 
@@ -63,19 +79,7 @@ const COMPANY_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('company'); // 1
 // re-send every job that was ever found. See Decision #30 in
 // pipeline-architecture.md.
 export async function readJobsTab({ sheetsClient, sheetId, sheetName }) {
-  let res;
-  try {
-    res = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: `${sheetName}!A:I`,
-    });
-  } catch (err) {
-    throw new JobsTabReadError(`Could not read the "${sheetName}" tab: ${err.message}`, {
-      cause: err,
-    });
-  }
-
-  const rows = res?.data?.values || [];
+  const rows = await readJobsRows({ sheetsClient, sheetId, sheetName });
   const urls = new Set();
   const history = [];
   // Skip row 1 (header) unconditionally — even if the sheet is somehow
@@ -132,4 +136,58 @@ export async function appendJobsRows({ sheetsClient, sheetId, sheetName, offers,
     requestBody: { values },
   });
   return { appended: values.length };
+}
+
+const STATUS_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('status'); // 7 (0-based)
+const STATUS_COLUMN_LETTER = String.fromCharCode(65 + STATUS_COLUMN_INDEX); // 'H'
+const APPLY_URL_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('apply_url');
+const TITLE_COLUMN_INDEX = JOBS_TAB_COLUMNS.indexOf('title');
+
+// Status values the queue reads and writes. `apply` is set by the user to
+// queue a job; `capply --queue` sets `applied` after filling the form (the
+// user's choice — capply never clicks Submit) or `needs attention` when the
+// fill was blocked or failed.
+export const JOB_STATUS = Object.freeze({
+  queued: 'apply',
+  done: 'applied',
+  attention: 'needs attention',
+  skip: 'skip',
+});
+
+// Rows whose status is "apply" (case-insensitive), in sheet order. `row` is
+// the 1-based sheet row number, for display only — setJobStatus() finds the
+// row again by URL, since the user may sort or edit the sheet mid-run.
+export async function readApplyQueue({ sheetsClient, sheetId, sheetName }) {
+  const rows = await readJobsRows({ sheetsClient, sheetId, sheetName });
+  const queue = [];
+  rows.slice(1).forEach((row, i) => {
+    if (cell(row, STATUS_COLUMN_INDEX).toLowerCase() !== JOB_STATUS.queued) return;
+    const url = cell(row, URL_COLUMN_INDEX);
+    if (!url) return;
+    queue.push({
+      row: i + 2,
+      url,
+      applyUrl: cell(row, APPLY_URL_COLUMN_INDEX),
+      company: cell(row, COMPANY_COLUMN_INDEX),
+      title: cell(row, TITLE_COLUMN_INDEX),
+    });
+  });
+  return queue;
+}
+
+// Writes `status` into the status cell of the row whose `url` matches,
+// re-reading the tab first so a sorted/edited sheet still gets the right row.
+// Only ever touches that one cell (never column J — see the header comment).
+export async function setJobStatus({ sheetsClient, sheetId, sheetName, url, status }) {
+  const rows = await readJobsRows({ sheetsClient, sheetId, sheetName });
+  const index = rows.findIndex((row, i) => i > 0 && cell(row, URL_COLUMN_INDEX) === url);
+  if (index < 0) throw new Error(`no row with url ${url} in the "${sheetName}" tab`);
+  const rowNumber = index + 1;
+  await sheetsClient.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!${STATUS_COLUMN_LETTER}${rowNumber}`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [[status]] },
+  });
+  return { row: rowNumber };
 }

@@ -64,6 +64,8 @@ import { validateProfile } from '../lib/candidate-profile.schema.mjs';
 import { detectLanguage } from './language-detect.mjs';
 import { appendApplyLog } from './apply-log.mjs';
 import { REACT_SELECT_SNIPPET } from './react-select-helper.mjs';
+import { ensureChrome } from './chrome-launcher.mjs';
+import { JOB_STATUS, readApplyQueue, setJobStatus } from '../lib/google-sheets-jobs.mjs';
 import { matchEeoOption, classifyIntent, EEO_INTENT_HINTS } from './eeo-match.mjs';
 
 // ───────────────────────────────────────────────────────────── constants ────
@@ -1176,11 +1178,12 @@ export function normalizeApplyUrl(rawUrl) {
   return parsed.toString();
 }
 
-function parseArgs(argv) {
-  const out = { dryRun: false, port: 9222, maxAiCalls: 1, url: null };
+export function parseArgs(argv) {
+  const out = { dryRun: false, port: 9222, maxAiCalls: 1, url: null, queue: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
+    else if (a === '--queue') out.queue = true;
     else if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--max-ai-calls') out.maxAiCalls = Number(argv[++i]);
     else if (!a.startsWith('--')) out.url = a;
@@ -1189,18 +1192,9 @@ function parseArgs(argv) {
   return out;
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  if (!args.url) {
-    console.error('Usage: node src/apply/index.mjs <job-url> [--dry-run] [--port 9222]');
-    process.exit(2);
-  }
-
-  const startTime = Date.now();
-  const log = [];
-  const errors = [];
-
-  // --- profile ---
+// Profile, CV and preference text — loaded once per run (and shared by every
+// job in --queue mode). Exits the process on a missing/invalid profile.
+export function loadApplyInputs() {
   const profilePath = 'config/candidate-profile.yml';
   if (!fs.existsSync(profilePath)) {
     console.error(`✖ ${profilePath} not found. Run /apply-onboard first.`);
@@ -1216,9 +1210,19 @@ async function main() {
   const cvMd = fs.existsSync('config/cv.md') ? fs.readFileSync('config/cv.md', 'utf8') : '';
   const preferencesText = buildPreferencesText(profile);
   console.error('✓ profile + cv.md loaded');
+  return { profile, cvMd, preferencesText };
+}
 
-  // --- browser ---
-  const cdpUrl = `http://localhost:${args.port}`;
+// Starts Chrome if nothing answers on `port` (chrome-launcher.mjs), then
+// connects over CDP. Exits the process if Chrome can't be reached.
+async function connectToChrome(port) {
+  try {
+    await ensureChrome({ port });
+  } catch (e) {
+    console.error(`✖ ${e.message}`);
+    process.exit(1);
+  }
+  const cdpUrl = `http://localhost:${port}`;
   console.error(`→ connecting to Chrome DevTools at ${cdpUrl}...`);
   let browser;
   try {
@@ -1230,13 +1234,23 @@ async function main() {
     process.exit(1);
   }
   console.error('✓ connected to Chrome');
+  return browser;
+}
 
-  const ctx = browser.contexts()[0];
+// Fills one application in a new tab and leaves it open for review. Never
+// throws: failures are recorded in the returned `finalStatus` / `errors`
+// (and in data/apply-log.jsonl), so --queue can carry on to the next job.
+async function applyToUrl(ctx, { url, dryRun, maxAiCalls }, { profile, cvMd, preferencesText }) {
+  const args = { url, dryRun, maxAiCalls };
+  const startTime = Date.now();
+  const log = [];
+  const errors = [];
   const page = await ctx.newPage();
   let finalStatus = 'Failed';
   let company = null;
   let role = null;
   let language = null;
+  const result = () => ({ url: args.url, finalStatus, company, role, language, errors });
 
   // Runs waitOutCaptcha() and, if a blocker remains, records finalStatus/errors
   // and returns true so the caller can `return` immediately. Centralizes the
@@ -1256,7 +1270,7 @@ async function main() {
     await page.waitForTimeout(NAV_SETTLE_MS);
     console.error('✓ page loaded, checking for blockers...');
 
-    if (await stopIfBlocked('initial load')) return;
+    if (await stopIfBlocked('initial load')) return result();
 
     if (await waitForFormFields(page)) {
       console.error('✓ form rendered');
@@ -1288,7 +1302,7 @@ async function main() {
       // it. Skipped on step 1 because main() ran the identical check moments
       // earlier, right after page.goto().
       if (!args.dryRun && step > 1) {
-        if (await stopIfBlocked(`step ${step} start`)) return;
+        if (await stopIfBlocked(`step ${step} start`)) return result();
       }
 
       if (!args.dryRun) console.error(`\n── step ${step}: scanning page ──`);
@@ -1376,7 +1390,7 @@ async function main() {
           // trigger reactively mid-burst — a single per-step check can land
           // right after a challenge already appeared AND cleared between two
           // checks, missing it entirely even though it was genuinely there.
-          if (await stopIfBlocked(`step ${step}, field "${p.classKey}"`)) return;
+          if (await stopIfBlocked(`step ${step}, field "${p.classKey}"`)) return result();
         }
 
         // 2. ONE batched AI call for this step's free-text AND AI-choice questions
@@ -1504,7 +1518,7 @@ async function main() {
                 // Same per-field check as the deterministic-fill loop above —
                 // AI answers also involve real typing/DOM interaction, so the
                 // same reactive-trigger risk applies here.
-                if (await stopIfBlocked(`step ${step}, AI field "${p.classKey}"`)) return;
+                if (await stopIfBlocked(`step ${step}, AI field "${p.classKey}"`)) return result();
               }
             } catch (e) {
               console.error(`  ✗ AI call failed: ${e.message}`);
@@ -1622,6 +1636,108 @@ async function main() {
         notes: log.join(' | '),
       });
     }
+  }
+  return result();
+}
+
+// Sheet status for a queued job once capply is done with it: "applied" when
+// the form was filled (the user's choice of wording — nothing is submitted),
+// otherwise "needs attention".
+export function queueStatusFor(finalStatus) {
+  return finalStatus === 'Ready for review' ? JOB_STATUS.done : JOB_STATUS.attention;
+}
+
+// capply --queue: fill every Jobs-tab row whose status is "apply", one tab
+// per job, then set the row to "applied" (filled) or "needs attention"
+// (blocked/failed). The sheet is read before Chrome is touched, so an empty
+// queue exits without launching anything.
+// `deps.sheetsClient` replaces the real Google Sheets client (tests/harnesses).
+export async function runQueue(args, inputs, deps = {}) {
+  const { buildSheetsClient } = await import('../lib/google-sheets-client.mjs');
+  const { profile } = inputs;
+  const sheetId = process.env.GOOGLE_SHEETS_DIGEST_ID || profile.digest_sheet_id;
+  const sheetName = profile.jobs_sheet_name || 'Jobs';
+  if (!sheetId) {
+    console.error('✖ No Google Sheet ID: set digest_sheet_id in config/candidate-profile.yml.');
+    process.exit(2);
+  }
+
+  let sheetsClient;
+  let queue;
+  try {
+    sheetsClient =
+      deps.sheetsClient ??
+      (await buildSheetsClient({ keyFile: 'config/google-service-account.json' }));
+    queue = await readApplyQueue({ sheetsClient, sheetId, sheetName });
+  } catch (e) {
+    console.error(`✖ Could not read the "${sheetName}" tab: ${e.message}`);
+    process.exit(1);
+  }
+  if (queue.length === 0) {
+    console.error(`Nothing to do — no rows with status "apply" in the "${sheetName}" tab.`);
+    return;
+  }
+  console.error(`Queue: ${queue.length} job(s) with status "apply".`);
+
+  const browser = await connectToChrome(args.port);
+  const results = [];
+  try {
+    const ctx = browser.contexts()[0];
+    for (const [i, job] of queue.entries()) {
+      console.error(
+        `\n━━━━ [${i + 1}/${queue.length}] ${job.company || '—'} — ${job.title || job.url} (row ${job.row}) ━━━━`
+      );
+      const url = normalizeApplyUrl(job.applyUrl || job.url);
+      const r = await applyToUrl(
+        ctx,
+        { url, dryRun: args.dryRun, maxAiCalls: args.maxAiCalls },
+        inputs
+      );
+      const status = queueStatusFor(r.finalStatus);
+      let statusNote = args.dryRun ? '(dry run — sheet not updated)' : '';
+      if (!args.dryRun) {
+        try {
+          await setJobStatus({ sheetsClient, sheetId, sheetName, url: job.url, status });
+        } catch (e) {
+          statusNote = `(could not update the sheet: ${e.message})`;
+        }
+      }
+      results.push({ job, status, statusNote });
+    }
+  } finally {
+    // Disconnect only — never close the user's Chrome or the tabs under review.
+    await browser.close().catch(() => {});
+  }
+
+  console.log('\n══════════════ QUEUE SUMMARY ══════════════');
+  for (const { job, status, statusNote } of results) {
+    const mark = status === JOB_STATUS.done ? '✓' : '⚠';
+    console.log(
+      `  ${mark} ${status.padEnd(15)} ${job.company || '—'} — ${job.title || job.url} ${statusNote}`
+    );
+  }
+  console.log('\n⚠  NOTHING SUBMITTED. Review each open tab and click Submit yourself.');
+  console.log('═══════════════════════════════════════════\n');
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (!args.url && !args.queue) {
+    console.error(
+      'Usage: node src/apply/index.mjs <job-url> [--dry-run] [--port 9222]\n' +
+        '       node src/apply/index.mjs --queue [--dry-run] [--port 9222]'
+    );
+    process.exit(2);
+  }
+  const inputs = loadApplyInputs();
+  if (args.queue) {
+    await runQueue(args, inputs);
+    return;
+  }
+  const browser = await connectToChrome(args.port);
+  try {
+    await applyToUrl(browser.contexts()[0], args, inputs);
+  } finally {
     // Disconnect only — never close the user's Chrome or the tab under review.
     await browser.close().catch(() => {});
   }

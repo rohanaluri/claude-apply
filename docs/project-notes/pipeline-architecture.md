@@ -17,8 +17,11 @@ Last reviewed: 2026-09-29
    posted in the last 14 days, sends at most 3 per company per day and 10 per company
    per rolling 30 days, newest first (Decision #38), appends them to the Jobs tab, then
    writes one Digest-tab row that Zapier turns into an email.
-3. **Apply** (local, you) — `capply "<url>"` fills the form in Chrome over CDP and stops
-   at Submit (Section 6).
+3. **Apply** (local, you) — mark jobs `apply` in the Jobs tab's `status` dropdown, then
+   double-click the `capply-queue` desktop shortcut (or run `capply --queue`): it starts
+   Chrome if needed, fills each marked job in its own tab, and sets the row to `applied`
+   (green) or `needs attention` (red). You review each tab and click Submit
+   (Decision #45). `capply "<url>"` still fills a single job.
 
 Phase 2 (LLM scoring) still exists in the repo but is **not** on the daily path
 (Decision #29). Measured 2026-09-29 against an empty Jobs tab: 706 prefilter
@@ -350,6 +353,28 @@ repeating it.
     Verified with `capply --dry-run` on four live Ashby forms (Browserbase, Ramp,
     OpenAI, Notion) and by clicking a live Yes/No button (`aria-pressed` flips on the
     next check); Greenhouse and Lever plans are identical to before.
+45. **`capply --queue`, Chrome auto-start, status dropdown and desktop shortcut
+    (2026-09-29).** Replaces copy-paste-per-job: the user marks rows `apply` in the Jobs
+    tab, then runs one command (or double-clicks the shortcut). The queue reads the sheet
+    *before* touching Chrome (an empty queue exits without launching anything), fills
+    each job in its own tab via the same per-job code as single-URL `capply` (extracted
+    from `main()` into `applyToUrl()`, which returns the job's result instead of exiting),
+    then writes the row's status: `applied` if the form was filled, `needs attention` if
+    it was blocked or failed — the queue carries on either way. Rows are found again by
+    URL before each write (`setJobStatus()`), so sorting the sheet mid-run can't mark the
+    wrong row, and only the status cell is written. **"applied" is written after
+    filling, not after submitting — the user's explicit choice** (the sheet is their
+    tracker; `capply` still never clicks Submit, and `data/applications.md` /
+    `apply-log.jsonl` keep their stricter status). Chrome auto-start
+    (`src/apply/chrome-launcher.mjs`) launches the same profile/flags as `chrome-apply`,
+    detached so it outlives the run. Sheets auth moved to `src/lib/google-sheets-client.mjs`
+    (shared with the digest), adding a fallback to `config/google-service-account.json`
+    so the shortcut works without env vars. Verified: a non-dry-run queue against local
+    test forms and an in-memory sheet (auto-launched headless Chrome; 3 `apply` rows
+    processed, `skip` untouched, an unreachable job → `needs attention` without stopping
+    the queue, statuses written to the right rows); a dry-run queue over real Lever,
+    Greenhouse-embed and Ashby jobs; the `.bat` run through `cmd.exe` → WSL against the
+    real sheet (empty queue → clean exit); the dropdown/colors applied to the real sheet.
 
 ---
 
@@ -390,7 +415,15 @@ profile (its role is now unclear — see Open Items).
 capply() { (cd ~/claude-apply && node src/apply/index.mjs "$1"); }
 ```
 
-Daily use is now `capply "<job-url>"`. Runs Phase 4 directly, bypassing Claude Code's
+**Queue mode and desktop shortcut (2026-09-29, Decision #45):** `capply --queue` fills
+every Jobs-tab row whose `status` is `apply`. `scripts/windows/capply-queue.bat` (copied
+to the Windows desktop) runs it via `wsl.exe -- bash -lic` — `-lic` so `~/.bashrc` loads
+nvm's `node` — and waits for Enter so the summary stays readable. Both `capply` modes
+start Chrome themselves if nothing answers on port 9222 (same profile/flags as
+`chrome-apply`), so the alias is now optional. The `capply()` function above passes only
+`"$1"`; change it to `"$@"` to also pass `--dry-run` alongside `--queue`.
+
+Single-job use is still `capply "<job-url>"`. Runs Phase 4 directly, bypassing Claude Code's
 permission layer entirely. **Consequence: the terminal is now the sole record of a run** —
 no Claude Code session transcript to review afterward — which is why live per-field
 logging was added the same day (Section 6).
@@ -660,7 +693,10 @@ limits added 2026-09-29 (Decision #38)**, verified with a local scan + `digest -
 **Google Sheet:** "Daily Application Digest" (same spreadsheet for both tabs).
 - **Digest tab** — columns `date | subject | job_count | body`, unchanged.
 - **Jobs tab** — columns `date_found | company | title | location | url | platform |
-  apply_url | status | notes | capply_command` (confirmed with Rohan 2026-09-18). Code
+  apply_url | status | notes | capply_command` (confirmed with Rohan 2026-09-18).
+  `status` has a dropdown — `apply` (yellow, queued for `capply --queue`), `applied`
+  (green), `needs attention` (red), `skip` — set up by `scripts/setup-jobs-sheet.mjs`
+  (formatting only, safe to re-run; applied 2026-09-29, Decision #45). Code
   only ever reads/writes columns A:I (Decision #36); column J (`capply_command`) is
   100% owned by the sheet's own formula — code must never touch it. One-time setup,
   done by hand, not by code: header row; a `status` dropdown (data validation) with
@@ -1052,6 +1088,8 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       through `chooseOption()` at all.)
 - [ ] **Cover-letter generation isn't wired into `index.mjs`.** `renderLatex()` exists and
       is real, but `cover_letter_*` fields currently route to manual review.
+- [ ] **First real `capply --queue` run** (Decision #45): confirm statuses turn green/red
+      in the real sheet and the tabs are left open for review.
 - [ ] **Run `capply` for real on an Ashby `/application` URL** (Decisions #42, #43).
       Greenhouse's embed URL is confirmed working live; Ashby filled 7/12 fields live
       before #44, and #44 is verified with `--dry-run` only. Still manual on Ashby: the

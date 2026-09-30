@@ -38,8 +38,10 @@
 // the service account's JSON key file (this is the Google-standard env var
 // name — the googleapis library picks it up automatically), or set
 // $GOOGLE_SERVICE_ACCOUNT_JSON to the key's raw JSON content (cloud
-// Routine). The service account's email (inside that JSON key) must be
-// shared on the target Sheet as an Editor.
+// Routine); with neither set, config/google-service-account.json is used if
+// present (see src/lib/google-sheets-client.mjs). The service account's
+// email (inside that JSON key) must be shared on the target Sheet as an
+// Editor.
 //
 // --dry-run prints what WOULD be written to both tabs; writes nothing. It
 // skips the Jobs tab read, so limits are applied as if the tab were empty.
@@ -48,8 +50,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
-import { google } from 'googleapis';
 import { readTodaysOffers } from '../lib/todays-offers.mjs';
+import { buildSheetsClient } from '../lib/google-sheets-client.mjs';
 import { readJobsTab, appendJobsRows, JobsTabReadError } from '../lib/google-sheets-jobs.mjs';
 import { resolveDigestLimits, selectJobs } from './select-jobs.mjs';
 
@@ -183,25 +185,6 @@ export function buildDigestHtml({ today, newJobs, jobsTabUrl, heldBack = null })
 </div>`;
 }
 
-// Two ways to authenticate, so the same script works both locally (WSL2,
-// via a key FILE) and in the cloud Routine (via the key CONTENT in an env
-// var — no file-writing setup script needed, nothing touches disk):
-//   1. $GOOGLE_SERVICE_ACCOUNT_JSON — raw JSON key content (cloud Routine)
-//   2. $GOOGLE_APPLICATION_CREDENTIALS — path to a key file (local WSL2,
-//      Google's own standard convention, picked up automatically)
-async function buildSheetsClient() {
-  const scopes = ['https://www.googleapis.com/auth/spreadsheets'];
-  let auth;
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-    auth = new google.auth.GoogleAuth({ credentials, scopes });
-  } else {
-    auth = new google.auth.GoogleAuth({ scopes });
-  }
-  const authClient = await auth.getClient();
-  return google.sheets({ version: 'v4', auth: authClient });
-}
-
 // Appends one row to the Digest tab. `sheetsClient` is injected so this
 // stays unit-testable with a fake client (no real Google API needed).
 // Row shape: [date, subject, job_count, body] — matches columns A:D,
@@ -291,7 +274,9 @@ async function main() {
 
   let sheetsClient;
   try {
-    sheetsClient = await buildSheetsClient();
+    sheetsClient = await buildSheetsClient({
+      keyFile: path.join(CONFIG_DIR, 'google-service-account.json'),
+    });
   } catch (err) {
     console.error(
       `[digest] Could not authenticate with Google Sheets: ${err.message}\n` +
