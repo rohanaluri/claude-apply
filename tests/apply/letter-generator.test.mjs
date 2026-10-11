@@ -28,6 +28,20 @@ test('uses english instructions when language=en', () => {
   assert.match(prompt, /english/i);
 });
 
+test('defaults to english instructions when language is missing or unknown', () => {
+  for (const language of [undefined, null, 'de']) {
+    const prompt = buildLetterPrompt({
+      company: 'Widget Corp',
+      role: 'Data Scientist',
+      language,
+      jdText: 'You will build models.',
+      candidateSummary: 'Data scientist.',
+    });
+    assert.match(prompt, /in English/);
+    assert.doesNotMatch(prompt, /français/i);
+  }
+});
+
 test('truncates very long JD', () => {
   const longJd = 'x'.repeat(10_000);
   const prompt = buildLetterPrompt({

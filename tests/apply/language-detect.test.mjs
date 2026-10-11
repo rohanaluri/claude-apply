@@ -42,6 +42,17 @@ test('french when accents and french words dominant', () => {
   );
 });
 
-test('defaults to french on very short input', () => {
-  assert.equal(detectLanguage({ title: 'Stage', description: '' }), 'fr');
+test('defaults to english on very short input', () => {
+  assert.equal(detectLanguage({ title: 'Stage', description: '' }), 'en');
+});
+
+test('defaults to english on empty input', () => {
+  assert.equal(detectLanguage(), 'en');
+});
+
+test('defaults to english when no marker of either language is found', () => {
+  assert.equal(
+    detectLanguage({ title: 'Data Scientist', description: 'Python, SQL, Spark, Databricks.' }),
+    'en'
+  );
 });

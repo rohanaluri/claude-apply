@@ -893,7 +893,7 @@ Every file below was opened and read directly — not assumed from the README.
 | `step-detect.mjs` | `detectStep()` — detects multi-step flow position via URL/DOM markers, Workday-shaped | No (see Open Items) |
 | `confirmation-detector.mjs` | Old success/fail page detection — dead code since the tripwire patch | No |
 | `accounts.mjs` | Per-ATS email aliases + random passwords for platforms requiring account creation | No |
-| `language-detect.mjs` | Detects French vs. English from posting text; **defaults to French when ambiguous** | No |
+| `language-detect.mjs` | Detects French vs. English from posting text; **defaults to English when ambiguous** | No |
 | `cover-letter.mjs` / `letter-generator.mjs` | Optional cover-letter generation via `claude -p` | **Yes, if used** |
 | `apply-log.mjs` | JSON-line logging of each apply attempt | No |
 | `score/prompt-builder.mjs` | `buildPrompt()` / `buildBatchPrompt()` — English/US criteria, 0-10 scale, `{score, reason}` | Builds Phase 2's prompt |

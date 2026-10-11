@@ -33,58 +33,80 @@ education:
     start: '2025-08-01' # approximate — not stated explicitly on resume
     end: '2026-05-31'
     description: >
-      GPA 4.0/4.0. Coursework: Statistical Modeling, Data & Visual Analytics,
-      Deep Learning, Deterministic Optimization, Database Systems.
+      GPA 4.0/4.0. Coursework: Natural Language Processing, Bayesian
+      Statistics, Deep Learning, Time Series Analysis, Reinforcement Learning.
   - school: Georgia Institute of Technology
-    degree: B.S. in Industrial Engineering
+    degree: B.S. in Industrial & Systems Engineering
     field: Analytics & Data Science
     start: '2021-08-01' # approximate — not stated explicitly on resume
     end: '2025-05-31'
     description: >
-      GPA 3.87/4.0. Coursework: Data Input/Manipulation, Machine Learning,
+      GPA 3.9/4.0. Coursework: Data Input/Manipulation, Machine Learning,
       Statistical Methods, Decision & Data Analysis, Constraint Programming.
 
 # --- Experience ---
 experiences:
-  - company: Automatic Data Processing (ADP)
-    title: Data Science/Machine Learning Intern
+  - company: ADP
+    title: Associate Data Scientist
+    start: '2025-07-01'
+    end: null # current role
+    description: |
+      Designed an event-driven Flask service (AWS SNS/SQS, MySQL) to detect
+      rate changes across 52 U.S. prevailing wage sources and automate pull
+      requests into downstream policy templates. Developed an LLM extraction
+      pipeline with Strands Agents that converted 5,000+ rate publications
+      into structured data, enforcing a 95% field-accuracy gate on all prompt
+      updates. Implemented OpenTelemetry trace propagation across 9 event
+      types to debug requests end to end in Splunk and Dynatrace. Authored
+      Dockerfiles and maintained Helm charts for Kubernetes autoscaling
+      (2 to 64 pods) and environment promotion. Configured Concourse
+      pipelines to run 2,000+ pytest tests and deploy with automated
+      Liquibase database migrations.
+  - company: ADP
+    title: Data Science Intern
     start: '2024-05-01'
     end: '2024-08-31'
     description: |
-      Built a Databricks pipeline extracting employee data from payroll documents
-      into structured JSON. Developed 6 vendor-specific GPT-4 templates, achieving
-      92% accuracy vs. ground truth. Deployed AWS Lambda functions for real-time
-      extraction via API with S3 storage. Built a PyQt5 GUI for multi-document
-      input and extraction-status feedback.
+      Constructed a Databricks pipeline using LangChain and Azure OpenAI
+      (GPT-4 Turbo) to extract earnings, deductions, and net pay from payroll
+      PDFs into a standardized JSON schema. Engineered 6 vendor-specific
+      few-shot prompt templates, reaching 92% accuracy against ground truth
+      comparisons. Deployed AWS Lambda functions for real-time extraction via
+      a Swagger API, storing outputs in S3.
   - company: Epic Intentions Consulting
     title: Senior Consultant
     start: '2024-01-01'
     end: '2024-05-31'
     description: |
-      Developed a WordPress site for the HERO for Children organization,
-      streamlining unstructured text with Python (Pandas, NLTK). Optimized
-      UI/UX deployment, reducing hosting costs by 35%, and used Google
-      Analytics to analyze user navigation patterns.
+      Migrated the H.E.R.O. for Children website from Joomla to WordPress,
+      cutting hosting costs by 35%, and rewrote site content using Python
+      text analysis (NLTK tokenization, TF-IDF keyword extraction).
+      Redesigned the site into 7 pages, using Google Analytics page-flow and
+      bounce-rate data to streamline user journeys.
   - company: NCR Corporation
     title: Product Management Intern
     start: '2023-05-01'
     end: '2023-08-31'
     description: |
-      Created an Order Confirmation Index for 45 digital signage products.
-      Flagged SKUs with statistically significant decline via Mann-Kendall
-      trend test. Optimized self-checkout POS interaction via Monte Carlo
-      simulation, reducing kiosk process time by 3.6%. Presented findings
-      in Tableau to board directors during the intern exhibition.
+      Built a client-facing Order Confirmation Index for 45 digital signage
+      products, compiling technical specifications from NCR's GSDB and Merlin
+      cloud-based platforms. Identified potential SKUs for discontinuation via
+      Mann-Kendall tests on Q3 audit data, flagging products with sales
+      declines. Mapped the kiosk self-checkout flow to find friction points,
+      then used Monte Carlo simulation of scan, payment, and attendant-assist
+      times to model a 3.6% faster transaction.
   - company: Georgia Institute of Technology
     title: Undergraduate Research (with Dr. Nicoleta Serban)
     start: '2022-01-01'
     end: '2023-05-31'
     description: |
-      Performed statistical analysis on opioid usage demographics within
-      Medicaid. Queried/processed MAX & TAF files from ResDAC via SQL,
-      merging multi-table datasets across 20,000+ patient records. Used SQL
-      CASE statements to organize socioeconomic data; visualized findings
-      via scatter plots and pie graphs in Seaborn.
+      Analyzed opioid usage patterns across demographic groups enrolled in
+      Medicaid. Queried and merged multi-table Medicaid MAX and TAF files from
+      ResDAC using SQL joins, managing 20,000+ patient records with data
+      cleaning and integrity checks. Constructed SQL stored procedures with
+      CASE logic to categorize socioeconomic data, and used Seaborn to
+      visualize relationships and model fit through scatter and residual
+      plots.
 
 # --- Work authorization ---
 work_authorization: U.S. citizen — no sponsorship needed

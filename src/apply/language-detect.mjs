@@ -5,13 +5,12 @@ const EN_MARKERS =
 
 export function detectLanguage({ title = '', description = '' } = {}) {
   const text = `${title} ${description}`;
-  if (text.trim().length < 10) return 'fr';
+  if (text.trim().length < 10) return 'en';
   const fr = (text.match(FR_MARKERS) || []).length;
   const en = (text.match(EN_MARKERS) || []).length;
   const accents = (text.match(/[àâçéèêëîïôûùüÿœ]/gi) || []).length;
   const frScore = fr * 2 + accents;
   const enScore = en * 2;
   if (frScore > enScore) return 'fr';
-  if (enScore > frScore) return 'en';
-  return 'fr';
+  return 'en';
 }
