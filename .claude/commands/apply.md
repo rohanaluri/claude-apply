@@ -25,7 +25,7 @@ Prerequisites:
   - config/candidate-profile.yml exists and is valid
 
 Files:
-  reads:  config/candidate-profile.yml, config/cv.md, the CV file at cv_path
+  reads:  config/candidate-profile.yml, config/resume.md, the CV file at cv_path
   writes: data/apply-log.jsonl
 
 See also: /scan, /score, /dashboard
@@ -95,7 +95,7 @@ workaround.
   that in any way — it has no submit-capable code path at all.
 - **Never invent form data.** Every filled value comes from
   `config/candidate-profile.yml`, or from the single batched AI call grounded in
-  `config/cv.md` for genuine free-text questions — never from Claude's own assumptions
+  `config/resume.md` for genuine free-text questions — never from Claude's own assumptions
   about the candidate.
 - **The browser tab stays open when the script finishes.** The user reviews every field
   and clicks Submit themselves, in their own time.

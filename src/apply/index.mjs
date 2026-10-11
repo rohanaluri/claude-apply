@@ -1211,9 +1211,9 @@ export function loadApplyInputs() {
     v.errors.forEach((e) => console.error(`   - ${e}`));
     process.exit(1);
   }
-  const cvMd = fs.existsSync('config/cv.md') ? fs.readFileSync('config/cv.md', 'utf8') : '';
+  const cvMd = fs.existsSync('config/resume.md') ? fs.readFileSync('config/resume.md', 'utf8') : '';
   const preferencesText = buildPreferencesText(profile);
-  console.error('✓ profile + cv.md loaded');
+  console.error('✓ profile + resume.md loaded');
   return { profile, cvMd, preferencesText };
 }
 

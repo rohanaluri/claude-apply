@@ -13,7 +13,7 @@ Instructions for Claude Code (and other LLM agents) working in this repository.
 - **Never commit personal data.** No real names, emails, phone numbers, address, company applications, or CV contents. The only allowed example persona is "Alice Martin" in `templates/`. The PII gate (`scripts/check-no-pii.sh`) runs in CI — if you break it, the PR is blocked.
 - **Never solve a captcha, bypass a login, or evade anti-bot measures.** If `/apply` encounters any of these, it must stop and ask the user.
 - **Never submit an application without a filled-in, verified required field.** Guessed EEO values are also forbidden — use the explicit profile value or `Prefer not to say`.
-- **Never invent experience** in cover letters or free-text answers. Ground everything in `config/cv.md` and `config/candidate-profile.yml`.
+- **Never invent experience** in cover letters or free-text answers. Ground everything in `config/resume.md` and `config/candidate-profile.yml`.
 - **Default to `Submitted (unconfirmed)`** if confirmation detection is ambiguous. Writing `Applied` requires a matched success text or URL.
 - **Stop on ambiguity.** Login wall, captcha, unknown required field, unrecognized multi-step page → stop, surface what you see, ask.
 
@@ -35,7 +35,7 @@ The three stages are independent and communicate only via files in `data/`: `sca
 
 ## First-time setup
 
-**If `config/candidate-profile.yml` does not exist, the user is a first-time user — run `/apply-onboard`.** That slash command handles everything: CV PDF extraction, building `config/cv.md` + `candidate-profile.yml`, discovering ~30 target companies via WebSearch, and running `scripts/setup.sh` non-interactively with the right flags. Read `.claude/commands/apply-onboard.md` before starting. (The command is namespaced `apply-onboard` rather than `onboard` to avoid colliding with the `onboard` skill from the `frontend-design` plugin — see issue #35.)
+**If `config/candidate-profile.yml` does not exist, the user is a first-time user — run `/apply-onboard`.** That slash command handles everything: CV PDF extraction, building `config/resume.md` + `candidate-profile.yml`, discovering ~30 target companies via WebSearch, and running `scripts/setup.sh` non-interactively with the right flags. Read `.claude/commands/apply-onboard.md` before starting. (The command is namespaced `apply-onboard` rather than `onboard` to avoid colliding with the `onboard` skill from the `frontend-design` plugin — see issue #35.)
 
 The `/scan`, `/score`, and `/apply` commands each have a first-run guard that redirects the user to `/apply-onboard` if the config is missing. Do not try to work around the guard by copying templates manually.
 
@@ -45,16 +45,16 @@ The `/scan`, `/score`, and `/apply` commands each have a first-run guard that re
 
 ### Slash commands (`.claude/commands/`)
 
-| Command                      | Contract                                                                                                                                                                                               |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/apply-onboard [cv.pdf]`    | First-run onboarding — extract CV, build `config/cv.md` + `candidate-profile.yml`, discover ~30 companies, run `scripts/setup.sh` non-interactively. Sub-commands: `:profile`, `:companies`, `:setup`. |
-| `/add-company <name or URL>` | Discover and append a new company to `config/portals.yml` (wraps `src/scan/discover-company.mjs` + `add-company.mjs`).                                                                                 |
-| `/scan`                      | `node src/scan/index.mjs` → appends new rows to `data/pipeline.md`; dedups via `scan-history.tsv`. Flags: `--dry-run`, `--only <slug>`, `--json`.                                                      |
-| `/score <url>`               | Reads `config/cv.md`; appends one JSON line to `data/evaluations.jsonl`. Also supports `--batch` and `--from-pipeline` (mutually exclusive).                                                           |
-| `/explain "<title>"`         | Trace which prefilter rule accepts or rejects a given title. Flags: `--company <name>`, `--location <loc>`.                                                                                            |
-| `/tune-filter`               | Interactive calibration of `portals.yml` `title_filter` against cached `scan-history.tsv`. No network calls.                                                                                           |
-| `/apply <url>`               | Opens the URL in Chrome, classifies/fills the form, uploads the CV via CDP, submits, updates `data/applications.md` + `data/apply-log.jsonl`.                                                          |
-| `/dashboard`                 | Rebuild `dashboard.html` from `data/` + `reports/`.                                                                                                                                                    |
+| Command                      | Contract                                                                                                                                                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/apply-onboard [cv.pdf]`    | First-run onboarding — extract CV, build `config/resume.md` + `candidate-profile.yml`, discover ~30 companies, run `scripts/setup.sh` non-interactively. Sub-commands: `:profile`, `:companies`, `:setup`. |
+| `/add-company <name or URL>` | Discover and append a new company to `config/portals.yml` (wraps `src/scan/discover-company.mjs` + `add-company.mjs`).                                                                                     |
+| `/scan`                      | `node src/scan/index.mjs` → appends new rows to `data/pipeline.md`; dedups via `scan-history.tsv`. Flags: `--dry-run`, `--only <slug>`, `--json`.                                                          |
+| `/score <url>`               | Reads `config/resume.md`; appends one JSON line to `data/evaluations.jsonl`. Also supports `--batch` and `--from-pipeline` (mutually exclusive).                                                           |
+| `/explain "<title>"`         | Trace which prefilter rule accepts or rejects a given title. Flags: `--company <name>`, `--location <loc>`.                                                                                                |
+| `/tune-filter`               | Interactive calibration of `portals.yml` `title_filter` against cached `scan-history.tsv`. No network calls.                                                                                               |
+| `/apply <url>`               | Opens the URL in Chrome, classifies/fills the form, uploads the CV via CDP, submits, updates `data/applications.md` + `data/apply-log.jsonl`.                                                              |
+| `/dashboard`                 | Rebuild `dashboard.html` from `data/` + `reports/`.                                                                                                                                                        |
 
 All commands support `--help` / `-h` and have a first-run guard that redirects to `/apply-onboard` if `config/candidate-profile.yml` is missing.
 

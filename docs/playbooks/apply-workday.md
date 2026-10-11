@@ -213,5 +213,5 @@ Follow **step 8** of `.claude/commands/apply.md` (L1→L2→L3 fallback). Use `b
 - **Never write `Applied` without a matched confirmation** (text or URL). Default to `Submitted (unconfirmed)`.
 - **Always stop and ask** on: captcha, unknown required field, unrecognized step (`'generic'`), credentials rejected, page error.
 - **Keep the GIF intact** on error — never delete it. It is diagnostic evidence.
-- **Never invent experience** — ground all answers in `config/cv.md` and the job description.
+- **Never invent experience** — ground all answers in `config/resume.md` and the job description.
 - **Credentials before submit** — always `writeAccount` before clicking the signup submit button.

@@ -25,7 +25,7 @@ work_authorization: EU citizen
 requires_sponsorship: false
 availability_start: '2026-09-01'
 internship_duration_months: 6
-cv_path: cv.md
+cv_path: resume.md
 auto_apply_min_score: 7
 `;
 
@@ -33,7 +33,7 @@ function mkTmp() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'score-rescore-'));
   fs.mkdirSync(path.join(d, 'config'), { recursive: true });
   fs.mkdirSync(path.join(d, 'data', 'tracker-additions'), { recursive: true });
-  fs.writeFileSync(path.join(d, 'config', 'cv.md'), '# CV\nDummy CV content.\n');
+  fs.writeFileSync(path.join(d, 'config', 'resume.md'), '# CV\nDummy CV content.\n');
   fs.writeFileSync(path.join(d, 'config', 'candidate-profile.yml'), PROFILE_YAML);
   fs.mkdirSync(path.join(d, '.git'), { recursive: true });
   return d;

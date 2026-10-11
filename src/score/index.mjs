@@ -474,7 +474,7 @@ function printScoreHelp() {
        /score --batch
        /score --json-input <path>
 
-LLM-evaluate one or more offers against config/cv.md.
+LLM-evaluate one or more offers against config/resume.md.
 
 Flags:
   --re-score             Re-evaluate a URL already in evaluations.jsonl
@@ -495,7 +495,7 @@ Flags:
   --help, -h             Show this help and exit.
 
 Files:
-  reads:  config/cv.md, config/candidate-profile.yml
+  reads:  config/resume.md, config/candidate-profile.yml
   writes: data/evaluations.jsonl  (one JSON line per offer)
 
 See also: /explain, /dashboard
@@ -540,7 +540,7 @@ async function main() {
       return;
     }
 
-    requireConfig(path.join(CONFIG_DIR, 'cv.md'));
+    requireConfig(path.join(CONFIG_DIR, 'resume.md'));
     const { profile, cvMarkdown } = await loadProfile(CONFIG_DIR);
 
     const startTime = Date.now();
@@ -797,7 +797,7 @@ async function main() {
     return;
   }
 
-  requireConfig(path.join(CONFIG_DIR, 'cv.md'));
+  requireConfig(path.join(CONFIG_DIR, 'resume.md'));
   const { profile, cvMarkdown } = await loadProfile(CONFIG_DIR);
 
   const { system, user } = buildPrompt({

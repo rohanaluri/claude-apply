@@ -1,21 +1,21 @@
 ---
-description: Evaluate a job offer URL against config/cv.md using a lightweight LLM call
+description: Evaluate a job offer URL against config/resume.md using a lightweight LLM call
 argument-hint: <job-url>
 ---
 
 # /score $ARGUMENTS
 
-Fetch the offer at `$ARGUMENTS`, build a prompt that compares it against `config/cv.md` + `config/candidate-profile.yml`, and append the structured result to `data/evaluations.jsonl`.
+Fetch the offer at `$ARGUMENTS`, build a prompt that compares it against `config/resume.md` + `config/candidate-profile.yml`, and append the structured result to `data/evaluations.jsonl`.
 
 ## First-run guard
 
-Before running the scorer, check that `config/candidate-profile.yml` **and** `config/cv.md` exist. If either is missing, **stop** and tell the user:
+Before running the scorer, check that `config/candidate-profile.yml` **and** `config/resume.md` exist. If either is missing, **stop** and tell the user:
 
 > "No config found. Run `/apply-onboard` first — it will extract your CV and build the profile."
 
 ## Prerequisites
 
-- `config/cv.md` is filled with your real CV.
+- `config/resume.md` is filled with your real CV.
 - `config/candidate-profile.yml` is valid.
 - `claude` CLI is on your `PATH` (the Anthropic Claude Code CLI). The script uses `claude -p` in stripped mode.
 
@@ -90,7 +90,7 @@ Idempotent: re-running `--batch` only scores offers not yet in `evaluations.json
 
 ## Re-scoring existing evaluations
 
-Use `--re-score` after updating `config/cv.md`, changing the scoring prompt, or noticing a stale score. It re-fetches the page and rewrites the matching entry in `data/evaluations.jsonl` in place.
+Use `--re-score` after updating `config/resume.md`, changing the scoring prompt, or noticing a stale score. It re-fetches the page and rewrites the matching entry in `data/evaluations.jsonl` in place.
 
 ```bash
 # Single URL (must already be in evaluations.jsonl)

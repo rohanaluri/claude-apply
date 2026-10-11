@@ -124,7 +124,7 @@ languages:
   - { code: en, level: native }
 
 # --- CV path (repo-relative recommended; absolute or ~/... also accepted) ---
-cv_path: config/cv.pdf
+cv_path: config/resume.pdf
 
 # --- Optional document paths (repo-relative, absolute, or ~/... all accepted) ---
 transcript_path: null

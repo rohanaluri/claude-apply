@@ -45,7 +45,7 @@ test('setup.sh: copies templates into config/ and does not touch real $HOME', ()
       existsSync(join(work, 'config', 'candidate-profile.yml')),
       'config/candidate-profile.yml should be created'
     );
-    assert.ok(existsSync(join(work, 'config', 'cv.md')));
+    assert.ok(existsSync(join(work, 'config', 'resume.md')));
     assert.ok(existsSync(join(work, 'config', 'portals.yml')));
     assert.ok(existsSync(join(work, 'data', 'applications.md')));
 

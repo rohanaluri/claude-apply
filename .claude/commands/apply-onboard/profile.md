@@ -1,11 +1,11 @@
 ---
-description: Onboarding phase 1 — extract CV, ask the user the missing fields, and write config/cv.md + config/candidate-profile.yml
+description: Onboarding phase 1 — extract CV, ask the user the missing fields, and write config/resume.md + config/candidate-profile.yml
 argument-hint: [path-to-cv.pdf]
 ---
 
 # /apply-onboard:profile $ARGUMENTS
 
-You are running **phase 1 of onboarding**: build the candidate profile. At the end of this skill, `config/cv.md`, `config/cv.<lang>.pdf`, and `config/candidate-profile.yml` exist and validate against the schema.
+You are running **phase 1 of onboarding**: build the candidate profile. At the end of this skill, `config/resume.md`, `config/cv.<lang>.pdf`, and `config/candidate-profile.yml` exist and validate against the schema.
 
 **Hard rules**
 
@@ -38,11 +38,11 @@ Hold these four extracted values (and their `null`s) in mind for step 2.5.
 
 Anything genuinely missing becomes a question in step 3.
 
-## 2. Write `config/cv.md` and copy the PDF
+## 2. Write `config/resume.md` and copy the PDF
 
-Create `config/cv.md` as a clean markdown version of the CV. This file is read by `/score` and the cover-letter generator — faithful to the PDF, flowing markdown (no tables, `##` for sections). Do not paraphrase or embellish.
+Create `config/resume.md` as a clean markdown version of the CV. This file is read by `/score` and the cover-letter generator — faithful to the PDF, flowing markdown (no tables, `##` for sections). Do not paraphrase or embellish.
 
-Copy the source PDF to `config/cv.pdf`. Record this as a **repo-relative path** (`cv_path: config/cv.pdf`) so the profile stays portable between machines. Absolute and `~/`-prefixed paths are also accepted if the user already stores their CV elsewhere.
+Copy the source PDF to `config/resume.pdf`. Record this as a **repo-relative path** (`cv_path: config/resume.pdf`) so the profile stays portable between machines. Absolute and `~/`-prefixed paths are also accepted if the user already stores their CV elsewhere.
 
 ## 2.5. Confirm extracted job-search fields
 
@@ -132,7 +132,7 @@ Sources:
 - From step 2: `cv_path`.
 - EEO fields default to `null` unless explicitly provided: `gender`, `ethnicity`, `veteran_status`, `disability_status`.
 
-Do NOT write `config/profile.yml` or `config/profile-condensed.md` — those files are no longer read by any command (`/score` reads `config/cv.md` directly).
+Do NOT write `config/profile.yml` or `config/profile-condensed.md` — those files are no longer read by any command (`/score` reads `config/resume.md` directly).
 
 Validate before writing by importing `validateProfile` from `src/lib/candidate-profile.schema.mjs` and running it on the in-memory object. If `ok: false`, show the errors, ask for the missing/invalid fields, retry — never write an invalid profile.
 
@@ -153,4 +153,4 @@ Write the job-search answers to `data/.onboard-state.json` so `/apply-onboard:co
 
 ## 7. Done
 
-Report briefly: `config/cv.md`, `config/cv.<lang>.pdf`, `config/candidate-profile.yml`, `data/.onboard-state.json` written and validated. If you were called from the `/apply-onboard` orchestrator, control returns there. Otherwise tell the user to run `/apply-onboard:companies` next.
+Report briefly: `config/resume.md`, `config/cv.<lang>.pdf`, `config/candidate-profile.yml`, `data/.onboard-state.json` written and validated. If you were called from the `/apply-onboard` orchestrator, control returns there. Otherwise tell the user to run `/apply-onboard:companies` next.

@@ -33,7 +33,7 @@ test('loadProfile — happy path returns profile + cvMarkdown', async () => {
   const dir = makeTmpDir();
   try {
     fs.writeFileSync(path.join(dir, 'candidate-profile.yml'), VALID_YAML);
-    fs.writeFileSync(path.join(dir, 'cv.md'), '# CV\nStuff');
+    fs.writeFileSync(path.join(dir, 'resume.md'), '# CV\nStuff');
     const { profile, cvMarkdown } = await loadProfile(dir, { repoRoot: dir });
     assert.equal(profile.first_name, 'Alice');
     assert.equal(cvMarkdown, '# CV\nStuff');
@@ -42,7 +42,7 @@ test('loadProfile — happy path returns profile + cvMarkdown', async () => {
   }
 });
 
-test('loadProfile — returns null cvMarkdown when cv.md missing', async () => {
+test('loadProfile — returns null cvMarkdown when resume.md missing', async () => {
   const dir = makeTmpDir();
   try {
     fs.writeFileSync(path.join(dir, 'candidate-profile.yml'), VALID_YAML);
@@ -105,7 +105,7 @@ work_authorization: EU citizen
 requires_sponsorship: false
 availability_start: '2026-09-01'
 internship_duration_months: 6
-cv_path: config/cv.pdf
+cv_path: config/resume.pdf
 transcript_path: ~/docs/transcript.pdf
 portfolio_path: /abs/portfolio.pdf
 auto_apply_min_score: 8
@@ -116,7 +116,7 @@ test('loadProfile — resolves relative CV path against explicit repoRoot', asyn
   try {
     fs.writeFileSync(path.join(dir, 'candidate-profile.yml'), VALID_YAML_ALL_PATHS);
     const { profile } = await loadProfile(dir, { repoRoot: dir });
-    assert.equal(profile.cv_path, path.join(dir, 'config/cv.pdf'));
+    assert.equal(profile.cv_path, path.join(dir, 'config/resume.pdf'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -164,7 +164,7 @@ test('loadProfile — auto-detects repoRoot via findRepoRoot when not passed', a
     fs.mkdirSync(configDir);
     fs.writeFileSync(path.join(configDir, 'candidate-profile.yml'), VALID_YAML_ALL_PATHS);
     const { profile } = await loadProfile(configDir);
-    assert.equal(profile.cv_path, path.join(fs.realpathSync(repoDir), 'config/cv.pdf'));
+    assert.equal(profile.cv_path, path.join(fs.realpathSync(repoDir), 'config/resume.pdf'));
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
   }

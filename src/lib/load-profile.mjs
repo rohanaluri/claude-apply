@@ -47,7 +47,7 @@ export async function loadProfile(configDir, { repoRoot } = {}) {
   const root = repoRoot ?? findRepoRoot(configDir);
   const resolvedProfile = resolveProfilePaths(profile, root);
 
-  const cvPath = path.join(configDir, 'cv.md');
+  const cvPath = path.join(configDir, 'resume.md');
   const cvMarkdown = fs.existsSync(cvPath) ? fs.readFileSync(cvPath, 'utf8') : null;
 
   return { profile: resolvedProfile, cvMarkdown };

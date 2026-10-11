@@ -15,7 +15,7 @@ function mkTmp() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'score-meta-'));
   fs.mkdirSync(path.join(d, 'config'), { recursive: true });
   fs.mkdirSync(path.join(d, 'data'), { recursive: true });
-  fs.writeFileSync(path.join(d, 'config', 'cv.md'), '# CV\nDummy CV body.\n');
+  fs.writeFileSync(path.join(d, 'config', 'resume.md'), '# CV\nDummy CV body.\n');
   return d;
 }
 

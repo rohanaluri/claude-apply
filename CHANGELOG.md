@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** the resume files are now `config/resume.md` and `config/resume.pdf` (were `config/cv.md` and `config/cv.pdf`). Rename your existing files and point `cv_path` at `config/resume.pdf`.
 - `capply`: a question asking whether you will require/need sponsorship is now always classified as `sponsorship`, even when it mentions work authorization (previously answered as `work_auth` → "Yes").
 - `capply` on Ashby: Yes/No button questions are now detected and answered (from the profile, or via the AI multiple-choice step), the "Autofill from resume" upload is skipped, and visa-status follow-ups / interview-accommodation questions are no longer misclassified as `sponsorship` / `eeo_disability`.
 - `capply` now waits (up to 15s) for a client-rendered form before scanning, which fixes Ashby pages scanning as 0 fields and being detected as French; it also parses Ashby (`<role> @ <company>`) and Greenhouse embed-form (`Job Application for <role> at <company>`) page titles.

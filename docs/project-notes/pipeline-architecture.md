@@ -76,10 +76,10 @@ repeating it.
     be added to it explicitly, and it gates Phase 1 regardless of which phase actually
     needs the new field (see Section 7's inventory).
 22. `candidate-profile.yml` and `portals.yml` are force-committed despite the blanket
-    `.gitignore` rule, since neither held real secrets at the time; `cv.md` was
+    `.gitignore` rule, since neither held real secrets at the time; `resume.md` was
     force-committed the same way on 2026-08-26 while it was still a placeholder — only the
     service-account key remains deliberately uncommitted (see Section 8). **Since
-    2026-09-03 `cv.md`, `cv.pdf` and `candidate-profile.yml` hold real personal data and
+    2026-09-03 `resume.md`, `resume.pdf` and `candidate-profile.yml` hold real personal data and
     are still tracked** — the cloud Routine needs them in the checkout, but this
     conflicts with the repo's "never commit personal data" invariant (see Open Items).
 23. Phase 2 fetches Lever job bodies via Lever's public API (plain `fetch()`), not
@@ -597,9 +597,9 @@ abbreviations) — see Decision #34 for the full mechanism and how it was verifi
 
 **Status: confirmed working end-to-end in production (2026-08-26).** 19 real postings in,
 17 survived liveness filtering, scored in one `claude -p` call, 0 crossed the
-`auto_apply_min_score` threshold (highest: 7.5) — expected, since `cv.md` is still Alice
+`auto_apply_min_score` threshold (highest: 7.5) — expected, since `resume.md` is still Alice
 Martin's placeholder profile scored against real US Principal/Senior roles. First real
-proof of multi-offer batching (previously only N=1) and of `cv.md` loading in the cloud.
+proof of multi-offer batching (previously only N=1) and of `resume.md` loading in the cloud.
 
 **Trigger:** strict single daily cron run (7:00 AM), not on-demand.
 
@@ -639,7 +639,7 @@ caps at `jdMaxTokens` (default 1500/offer, applied per-offer even in the batched
 **Prompt shape (one call, whole batch):**
 
 ```
-System: [cv.md] + English, US Associate-Data-Scientist scoring criteria
+System: [resume.md] + English, US Associate-Data-Scientist scoring criteria
 User:   [offer 1 + url], [offer 2 + url], ... [offer N + url]
 ```
 
@@ -814,7 +814,7 @@ step's scan, and the AI call (explicitly announced before dispatch, since it's t
 legitimately slow step). Sample:
 
 ```
-✓ profile + cv.md loaded
+✓ profile + resume.md loaded
 → connecting to Chrome DevTools at http://localhost:9222...
 ✓ connected to Chrome
 Detected: company="Epoch AI"  role="Data Scientist"  language=en
@@ -855,13 +855,13 @@ known patterns; `mapProfileValue()` pulls answers from `candidate-profile.yml`. 
 regex, no AI. React-based dropdowns handled by `react-select-helper.mjs`.
 
 **Step C — Free-text fields (1 AI call, only if needed):** only `free_text` fields need a
-generated answer. One prompt covers all of them: questions + `cv.md`, grounded, 80-150
+generated answer. One prompt covers all of them: questions + `resume.md`, grounded, 80-150
 words, "never invent experience." Forms with only standard fields need **zero** AI calls.
 **This is the only place in the pipeline an essay is ever written** (Decision #11).
 
 **Step D — Resume upload ($0 AI):** `upload-file.mjs` sets the file directly on the
 `<input type="file">` via CDP. The 2026-08-27 test flagged `cv_upload` for review
-because `config/cv.pdf` didn't exist yet; it has since 2026-09-03. A successful live
+because `config/resume.pdf` didn't exist yet; it has since 2026-09-03. A successful live
 upload isn't recorded in these notes yet (see Open Items).
 
 **Step E — TRIPWIRE:** halts unconditionally at the review screen, never calls Submit.
@@ -889,7 +889,7 @@ Every file below was opened and read directly — not assumed from the README.
 | `field-classifier.mjs` | `classifyField()` — regex-matches ~30 field types; `mapProfileValue()` — maps to profile data. **Fixed 2026-08-27:** word-boundary bug in `experience_end`/`experience_start` (Decision #27). | No |
 | `dom-label.mjs` / `dom-label.browser.js` | `extractLabel()` — finds a field's human label across ATS-specific patterns; `clickInQuestion()` — clicks a radio/checkbox by question+choice text | No |
 | `react-select-helper.mjs` | `REACT_SELECT_SNIPPET` — opens and selects from React-Select-style dropdowns | No |
-| `upload-file.mjs` | `uploadFile()` — genuine Playwright `connectOverCDP` file upload. Works in isolation; not yet exercised in a real run (no `cv.pdf`) | No |
+| `upload-file.mjs` | `uploadFile()` — genuine Playwright `connectOverCDP` file upload. Works in isolation; not yet exercised in a real run (no `resume.pdf`) | No |
 | `step-detect.mjs` | `detectStep()` — detects multi-step flow position via URL/DOM markers, Workday-shaped | No (see Open Items) |
 | `confirmation-detector.mjs` | Old success/fail page detection — dead code since the tripwire patch | No |
 | `accounts.mjs` | Per-ATS email aliases + random passwords for platforms requiring account creation | No |
@@ -1013,7 +1013,7 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
 - [x] ~~No cloud Routine has been created yet.~~ **Resolved 2026-08-23/24.**
 - [x] ~~`portals.yml`'s tracked companies are mostly stale/wrong.~~ **Resolved 2026-08-26** — live Lever boards, broadened title filter, explicit `target_locations`. 19 real postings on the next run.
 - [x] ~~Phase 2's multi-offer batching is unproven in production.~~ **Resolved 2026-08-26** — 17 live offers, one batch call, real distinct scores.
-- [x] ~~`config/cv.md` is uncommitted and never exercised by a cloud run.~~ **Resolved 2026-08-26** — force-committed, confirmed read in the cloud.
+- [x] ~~`config/resume.md` is uncommitted and never exercised by a cloud run.~~ **Resolved 2026-08-26** — force-committed, confirmed read in the cloud.
 - [x] ~~`/apply` hangs or fails with no clear cause, hard to debug.~~ **Resolved 2026-08-27 (Decisions #24-27)** — root-caused to Claude Code's permission layer plus real, now-fixed bugs. `capply` + live per-field logging replace the opaque flow.
 - [x] ~~`work_auth` "no confident option match".~~ **Resolved 2026-08-29** — mapped to
       the new boolean `work_authorized`, plus the `extractLabel()` fix (Section 6).
@@ -1025,7 +1025,7 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       still use the plain exact/prefix/substring matcher, and a decline default like
       `'Prefer not to say'` vs. a page's "Decline to self-identify" may still go to
       review for those.
-- [ ] **Resume upload not yet recorded as working live.** `config/cv.pdf` exists since
+- [ ] **Resume upload not yet recorded as working live.** `config/resume.pdf` exists since
       2026-09-03; confirm a real `capply` run fills `cv_upload` and note it here.
 - [x] ~~Phase 3's digest still says `/apply <url>`, not `capply "<url>"`.~~ **Resolved
       2026-09-18 (Decision #32)** — the digest email no longer includes a per-job apply
@@ -1054,7 +1054,7 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       Greenhouse. `discover-company.mjs` could find their current board.
 - [ ] **Role-level dedupe doesn't persist across days.** The Jobs tab dedupes by exact
       URL only; a company reposting the same role under a new URL shows up again.
-- [ ] **Real personal data is committed** (`config/cv.md`, `cv.pdf`,
+- [ ] **Real personal data is committed** (`config/resume.md`, `resume.pdf`,
       `candidate-profile.yml` — Decision #22), against the repo's invariant. Options:
       keep the repo private and accept it, or move the data into the Routine's
       environment variables and untrack the files (history would still need cleaning).
@@ -1114,7 +1114,7 @@ during debugging 2026-08-24 through 2026-08-27 with no budget concern.
       platforms require a login before applying.
 - [ ] **`claude-in-chrome`'s role is unclear** now that Phase 4 is code-driven and invoked
       via `capply` without Claude Code at all. May not be needed.
-- [x] ~~`cv.md` and `candidate-profile.yml` are still templates.~~ **Resolved
+- [x] ~~`resume.md` and `candidate-profile.yml` are still templates.~~ **Resolved
       2026-09-03** — both hold real data (see the personal-data item above).
 - [ ] Confirm the 5/day Routine cap stays comfortable alongside normal interactive Claude
       Code usage.

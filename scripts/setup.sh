@@ -196,7 +196,7 @@ copy_if_missing() {
 }
 
 copy_if_missing "templates/candidate-profile.example.yml" "config/candidate-profile.yml" config
-copy_if_missing "templates/cv.example.md"                  "config/cv.md"                 config
+copy_if_missing "templates/cv.example.md"                  "config/resume.md"                 config
 copy_if_missing "templates/portals.example.yml"            "config/portals.yml"           config
 copy_if_missing "templates/applications.example.md"        "data/applications.md"         data
 copy_if_missing "templates/known-workday-slugs.example.json" "data/known-workday-slugs.json" data
@@ -214,7 +214,7 @@ if [[ $configs_copied -eq 1 ]]; then
   cat <<'EOF'
 Next steps:
   1. Edit config/candidate-profile.yml with your personal info
-  2. Edit config/cv.md with your CV (markdown)
+  2. Edit config/resume.md with your CV (markdown)
   3. Edit config/portals.yml with the companies to scan
   4. Reload your shell:      source ~/.zshrc   # or ~/.bashrc
   5. Launch Chrome with CDP: chrome-apply

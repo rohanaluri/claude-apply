@@ -13,7 +13,7 @@ node src/score/index.mjs <url>
 1. Run a deterministic prefilter on the URL (`src/score/prefilter.mjs`) — drop anything matching obvious skip patterns (wrong geography, wrong contract type).
 2. Fetch the job description page (or ATS API if available).
 3. Truncate the JD to a token budget (`src/lib/jd-truncate.mjs`).
-4. Build the prompt (`src/score/prompt-builder.mjs`) using `config/cv.md` directly as the candidate profile — no separate `profile-condensed.md` file is involved.
+4. Build the prompt (`src/score/prompt-builder.mjs`) using `config/resume.md` directly as the candidate profile — no separate `profile-condensed.md` file is involved.
 5. Shell out to `claude -p <prompt>` from a temp directory with:
    - `--disable-slash-commands`
    - `--no-chrome`
@@ -25,7 +25,7 @@ node src/score/index.mjs <url>
 ## Prerequisites
 
 - `claude` CLI in `$PATH` (the [Claude Code](https://claude.ai/code) CLI, signed in to an account with API access).
-- `config/cv.md` filled in.
+- `config/resume.md` filled in.
 - `config/candidate-profile.yml` valid.
 
 ## Output line

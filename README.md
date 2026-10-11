@@ -27,7 +27,7 @@
 
 - **No headless scraping of logged-in accounts.** If an offer requires a login, claude-apply stops and asks you to sign in manually in the open Chrome tab.
 - **No captcha solving.** Same — it stops and asks.
-- **No lying on forms.** Cover letters and free-text answers are grounded strictly in your CV (`config/cv.md`).
+- **No lying on forms.** Cover letters and free-text answers are grounded strictly in your CV (`config/resume.md`).
 - **No stealth / anti-bot evasion.** It runs in your own Chrome profile, as you.
 - **No scraping of non-API career pages.** Only ATSes with a usable public API are auto-scanned (Lever, Greenhouse, Ashby, Workable, Workday). Custom career pages require a manual fallback or a new fetcher (see `docs/extending.md`).
 
@@ -39,12 +39,12 @@ cd claude-apply
 bash scripts/setup.sh
 ```
 
-Then, from Claude Code, run **`/apply-onboard`** with the path to your CV PDF — it extracts your CV, builds `config/cv.md` + `config/candidate-profile.yml`, discovers ~30 target companies, and runs `scripts/setup.sh` non-interactively.
+Then, from Claude Code, run **`/apply-onboard`** with the path to your CV PDF — it extracts your CV, builds `config/resume.md` + `config/candidate-profile.yml`, discovers ~30 target companies, and runs `scripts/setup.sh` non-interactively.
 
 Or, manually:
 
 1. Edit `config/candidate-profile.yml` with your identity, availability, preferences.
-2. Edit `config/cv.md` with your CV (markdown).
+2. Edit `config/resume.md` with your CV (markdown).
 3. Edit `config/portals.yml` with the companies to scan.
 4. Reload your shell (`source ~/.zshrc` or `~/.bashrc`).
 5. Launch Chrome with CDP: `chrome-apply`.
@@ -107,7 +107,7 @@ Or, manually:
 All user data lives under `config/` and `data/` — both are `.gitignore`d. Templates live in `templates/` and are copied by `scripts/setup.sh` on first run.
 
 - `config/candidate-profile.yml` — identity, availability, CV paths, preferences.
-- `config/cv.md` — plain markdown CV used by `score` and cover-letter generation.
+- `config/resume.md` — plain markdown CV used by `score` and cover-letter generation.
 - `config/portals.yml` — companies to scan + title filter.
 - `data/applications.md` — tracker (Markdown table).
 - `data/pipeline.md` — inbox of new offers from `/scan`.

@@ -9,7 +9,7 @@ You are guiding a **first-time user** through the end-to-end setup of `claude-ap
 
 | Phase | Sub-skill                  | Outputs                                                                    |
 | ----- | -------------------------- | -------------------------------------------------------------------------- |
-| 1     | `/apply-onboard:profile`   | `config/cv.md`, `config/cv.<lang>.pdf`, `config/candidate-profile.yml`     |
+| 1     | `/apply-onboard:profile`   | `config/resume.md`, `config/cv.<lang>.pdf`, `config/candidate-profile.yml` |
 | 2     | `/apply-onboard:companies` | `config/portals.yml`                                                       |
 | 3     | `/apply-onboard:setup`     | `node_modules/`, CDP Chrome profile, `chrome-apply` alias, Chrome on :9222 |
 
@@ -47,7 +47,7 @@ Print `▶ Phase 1/3 — Profile` before delegating, and `✓ Phase 1/3 done` af
 
 Follow the instructions in `.claude/commands/apply-onboard/profile.md` end-to-end. Pass `$ARGUMENTS` through as the CV path if the user provided one.
 
-Phase 1 writes `config/cv.md`, `config/cv.<lang>.pdf`, `config/candidate-profile.yml`, and `data/.onboard-state.json`. Do not proceed until the profile validates against `validateProfile`.
+Phase 1 writes `config/resume.md`, `config/cv.<lang>.pdf`, `config/candidate-profile.yml`, and `data/.onboard-state.json`. Do not proceed until the profile validates against `validateProfile`.
 
 ## 2. Phase 2 — companies (`/apply-onboard:companies`)
 

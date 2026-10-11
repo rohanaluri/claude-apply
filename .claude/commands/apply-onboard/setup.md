@@ -37,7 +37,7 @@ Then run one of:
     bash scripts/setup.sh --yes --clone-chrome-profile       # if user said yes
     bash scripts/setup.sh --yes --no-clone-chrome-profile    # if user said no
 
-This will: install npm deps if missing (`npm ci` / `npm install`), create the CDP Chrome profile (empty or cloned), append the `chrome-apply` alias to the user's shell rc (with a timestamped backup), and copy any missing templates into `config/` (harmless — `cv.md`, `candidate-profile.yml`, and `portals.yml` already exist from the earlier phases and are skipped).
+This will: install npm deps if missing (`npm ci` / `npm install`), create the CDP Chrome profile (empty or cloned), append the `chrome-apply` alias to the user's shell rc (with a timestamped backup), and copy any missing templates into `config/` (harmless — `resume.md`, `candidate-profile.yml`, and `portals.yml` already exist from the earlier phases and are skipped).
 
 If the user is in an unusual shell setup, add `--no-rc` and print the alias to them manually.
 
@@ -196,7 +196,7 @@ Print the following summary, substituting values where marked:
 ✅ Onboarding complete.
 
 Files written:
-  • config/cv.md
+  • config/resume.md
   • config/cv.<lang>.pdf
   • config/candidate-profile.yml
   • config/portals.yml  (<N> companies)

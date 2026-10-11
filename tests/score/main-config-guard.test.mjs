@@ -28,8 +28,8 @@ test('score CLI — missing candidate-profile.yml exits 2 with clean message', (
     })
   );
 
-  // Provide cv.md so the cv guard passes; omit candidate-profile.yml to trigger the profile guard
-  fs.writeFileSync(path.join(cfgDir, 'cv.md'), '# CV\n\nAlice Martin — software engineer.\n');
+  // Provide resume.md so the cv guard passes; omit candidate-profile.yml to trigger the profile guard
+  fs.writeFileSync(path.join(cfgDir, 'resume.md'), '# CV\n\nAlice Martin — software engineer.\n');
 
   try {
     const res = spawnSync(
